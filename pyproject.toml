@@ -1,0 +1,19 @@
+[project]
+name = "image-detector"
+version = "0.1.0"
+description = "基于胸部X光的肺炎检测系统"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "kagglehub>=1.0.2",
+    "matplotlib>=3.11.0",
+    "opencv-python>=4.13.0.92",
+    "pandas>=3.0.4",
+    "pyqt5>=5.15.11",
+    "scikit-learn",
+    "seaborn>=0.13.2",
+    "torch>=2.12.1",
+    "torchaudio>=2.11.0",
+    "torchvision>=0.27.1",
+    "tqdm>=4.68.3",
+]

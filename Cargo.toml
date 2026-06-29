@@ -1,0 +1,23 @@
+[package]
+name = "image_detector"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.23", features = ["derive"] }
+image = "0.25.10"
+ndarray = "0.17.2"
+ndarray-npy = "0.10.0"
+rand = "0.10.1"
+walkdir = "2.5.0"
+
+[[bin]]
+name = "preprocess"
+path = "src/bin/preprocess.rs"
+
+
+[source.crates-io]
+replace-with = 'tuna'
+
+[source.tuna]
+registry = "https://mirrors.tuna.tsinghua.edu.cn/git/crates.io-index.git"
