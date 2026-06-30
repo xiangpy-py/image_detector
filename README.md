@@ -120,6 +120,3 @@ uv run python src-py/main.py gui
 
 在测试集上评估：Accuracy、Precision、Recall、F1-Score、AUC-ROC，并绘制 ROC 曲线与混淆矩阵。
 
-## 作者说明
-
-详细开发过程与关键决策记录见 `WRITING_LOG.md`。
