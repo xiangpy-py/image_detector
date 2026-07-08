@@ -10,8 +10,8 @@ wheels/
 .venv
 
 
-# Added by cargo
 
+database/
 /target
 
 # Project outputs
