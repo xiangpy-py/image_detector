@@ -5,7 +5,7 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
-    HBoxLayout,
+    QHBoxLayout,
     QLabel,
     QMessageBox,
     QProgressBar,
@@ -58,7 +58,7 @@ class PneumoniaGUI(QWidget):
         self._load_model()
 
     def _build_ui(self):
-        main_layout = HBoxLayout()
+        main_layout = QHBoxLayout()
 
         left_layout = QVBoxLayout()
         self.image_label = QLabel("请选择一张胸部 X 光图像")
@@ -67,7 +67,7 @@ class PneumoniaGUI(QWidget):
         self.image_label.setMinimumSize(400, 400)
         left_layout.addWidget(self.image_label)
 
-        button_layout = HBoxLayout()
+        button_layout = QHBoxLayout()
         self.select_btn = QPushButton("选择图像")
         self.select_btn.clicked.connect(self.select_image)
         self.detect_btn = QPushButton("开始检测")
@@ -151,6 +151,10 @@ class PneumoniaGUI(QWidget):
         self.detail_text.setPlainText(
             f"正在检测，请稍候...\n当前阈值: {self.threshold:.4f}"
         )
+
+        # 清理之前的 worker 避免内存泄漏
+        if self.worker is not None:
+            self.worker.deleteLater()
 
         self.worker = InferenceWorker(
             self.image_path, self.model, self.device, threshold=self.threshold

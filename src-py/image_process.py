@@ -1,29 +1,22 @@
 import numpy as np
 import torch
 from PIL import Image
+from torchvision import transforms
 
 from config import IMG_SIZE, IMAGENET_MEAN, IMAGENET_STD
 
 
-def load_image(path):
-    image = Image.open(path).convert("RGB")
-    return image
-
-
-def resize_image(image, size=IMG_SIZE):
-    return image.resize((size, size), Image.Resampling.LANCZOS)
-
-
-def image_to_tensor(image, size=IMG_SIZE):
-    image = resize_image(image, size)
-    arr = np.array(image).astype(np.float32) / 255.0
-    mean = np.array(IMAGENET_MEAN).reshape(1, 1, 3)
-    std = np.array(IMAGENET_STD).reshape(1, 1, 3)
-    arr = (arr - mean) / std
-    tensor = torch.from_numpy(arr).permute(2, 0, 1).float()
-    return tensor
+def get_inference_transforms(size=IMG_SIZE):
+    """获取与训练时验证集一致的预处理变换：Resize(256) → CenterCrop(224) → Normalize"""
+    return transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(size),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+    ])
 
 
 def preprocess_image_path(path, size=IMG_SIZE):
-    image = load_image(path)
-    return image_to_tensor(image, size)
+    image = Image.open(path).convert("RGB")
+    transform = get_inference_transforms(size)
+    return transform(image)

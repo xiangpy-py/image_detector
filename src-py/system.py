@@ -12,6 +12,10 @@ def is_windows() -> bool:
     return platform.system() == "Windows"
 
 
+def is_macos() -> bool:
+    return platform.system() == "Darwin"
+
+
 def get_platform_name() -> str:
     return platform.system()
 
@@ -25,12 +29,16 @@ def get_default_dataset_root() -> Path:
     if env_root:
         return Path(env_root)
 
-    if is_linux():
-        default = Path("/root/autodl-tmp/datasets/paultimothymooney/chest-xray-pneumonia/versions/2/chest_xray/chest_xray")
-    else:
-        default = _get_home() / "datasets" / "chest-xray-pneumonia" / "chest_xray"
-
-    return default
+    # 按优先级尝试多个候选路径，提高跨平台/跨环境的兼容性
+    candidates = [
+        Path("/root/autodl-tmp/datasets/paultimothymooney/chest-xray-pneumonia/versions/2/chest_xray/chest_xray"),
+        _get_home() / "datasets" / "chest-xray-pneumonia" / "chest_xray",
+        Path("database/paultimothymooney/chest-xray-pneumonia/versions/2/chest_xray/chest_xray"),
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[0]
 
 
 def get_default_cache_dir(project_root: Path) -> Path:
@@ -74,6 +82,6 @@ def get_num_workers_default() -> int:
 
 
 def get_multiprocessing_start_method() -> str:
-    if is_windows():
+    if is_windows() or is_macos():
         return "spawn"
     return "fork"

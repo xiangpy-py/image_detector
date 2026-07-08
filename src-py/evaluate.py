@@ -5,24 +5,22 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import torch
+from loguru import logger
 from sklearn.metrics import confusion_matrix, roc_auc_score, roc_curve
 
 from config import CLASS_NAMES, MODELS_DIR, OUTPUTS_DIR
-from dataset import get_class_counts, get_dataloaders, load_cached_data
+from dataset import get_dataloaders, load_cached_data
+from logger_config import setup_logger
 from model import build_model
 from threshold_tuner import find_best_threshold, save_threshold
-from train import evaluate_model, get_pos_weight
-
-
-def get_criterion(device, pos_weight):
-    return torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+from metrics import evaluate_model, get_criterion, get_pos_weight
 
 
 def evaluate_split(model, dataloader, device, criterion, split_name, threshold=0.5):
     metrics, labels, probs = evaluate_model(model, dataloader, device, criterion)
 
     preds = (np.array(probs) >= threshold).astype(int)
-    print(
+    logger.info(
         f"[{split_name}] "
         f"Accuracy={metrics['accuracy']:.4f} | "
         f"Precision={metrics['precision']:.4f} | "
@@ -48,7 +46,7 @@ def plot_roc(labels, probs, save_path):
     plt.tight_layout()
     plt.savefig(save_path)
     plt.close()
-    print(f"ROC 曲线已保存至 {save_path}")
+    logger.info(f"ROC 曲线已保存至 {save_path}")
 
 
 def plot_confusion_matrix(labels, probs, save_path, threshold=0.5):
@@ -70,7 +68,7 @@ def plot_confusion_matrix(labels, probs, save_path, threshold=0.5):
     plt.tight_layout()
     plt.savefig(save_path)
     plt.close()
-    print(f"混淆矩阵已保存至 {save_path}")
+    logger.info(f"混淆矩阵已保存至 {save_path}")
 
 
 def plot_training_history(history_path, save_path):
@@ -105,7 +103,7 @@ def plot_training_history(history_path, save_path):
     plt.tight_layout()
     plt.savefig(save_path)
     plt.close()
-    print(f"训练历史图已保存至 {save_path}")
+    logger.info(f"训练历史图已保存至 {save_path}")
 
 
 def run_evaluation():
@@ -130,7 +128,7 @@ def run_evaluation():
 
     best_threshold, best_f1 = find_best_threshold(val_labels, val_probs, metric="f1")
     threshold_path = save_threshold(best_threshold)
-    print(f"验证集最优阈值: {best_threshold:.4f} (F1={best_f1:.4f})，已保存至 {threshold_path}")
+    logger.info(f"验证集最优阈值: {best_threshold:.4f} (F1={best_f1:.4f})，已保存至 {threshold_path}")
 
     test_metrics, test_labels, test_probs = evaluate_split(
         model, test_loader, device, criterion, "Test", threshold=best_threshold
@@ -153,8 +151,9 @@ def run_evaluation():
     report_path = OUTPUTS_DIR / "metrics.json"
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
-    print(f"评估指标已保存至 {report_path}")
+    logger.info(f"评估指标已保存至 {report_path}")
 
 
 if __name__ == "__main__":
+    setup_logger()
     run_evaluation()

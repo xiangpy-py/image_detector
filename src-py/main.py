@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from loguru import logger
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import (
@@ -13,6 +15,7 @@ from config import (
     IMG_SIZE,
     override_paths,
 )
+from logger_config import setup_logger
 from system import get_multiprocessing_start_method, is_windows
 
 
@@ -76,9 +79,16 @@ def run_gui(args):
 def run_cache(args):
     _apply_path_args(args)
     binary = Path("target/release/preprocess")
+    if is_windows():
+        binary = binary.with_suffix(".exe")
+
     if not binary.exists():
-        print("未找到 Rust 预处理二进制文件，尝试编译...")
+        logger.info("未找到 Rust 预处理二进制文件，尝试编译...")
         subprocess.run(["cargo", "build", "--release", "--bin", "preprocess"], check=True)
+
+    # 编译后再次确认二进制存在
+    if not binary.exists():
+        raise FileNotFoundError(f"Rust 预处理二进制文件未找到: {binary}")
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -117,6 +127,8 @@ def main():
         import multiprocessing
 
         multiprocessing.set_start_method(get_multiprocessing_start_method(), force=True)
+
+    setup_logger()
 
     parser = argparse.ArgumentParser(description="胸部 X 光肺炎检测系统")
     subparsers = parser.add_subparsers(dest="command", required=True)

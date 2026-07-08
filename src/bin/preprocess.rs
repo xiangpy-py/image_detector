@@ -2,8 +2,10 @@ use clap::Parser;
 use image::{imageops::FilterType, ImageReader, ImageError};
 use ndarray::{s, Array3, Array4};
 use ndarray_npy::write_npy;
+use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
@@ -40,24 +42,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for (split_dir, split_name) in &splits {
         let mut image_paths: Vec<(PathBuf, i64)> = Vec::new();
-        for (class_name, label) in [("NORMAL", 0), ("PNEUMONIA", 1)] {
-            let class_dir = args.root.join(split_dir).join(class_name);
-            if !class_dir.exists() {
-                eprintln!("警告：目录不存在 {:?}", class_dir);
-                continue;
-            }
-            for entry in WalkDir::new(&class_dir)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
-                let path = entry.path();
-                if path.is_file() {
-                    if let Some(ext) = path.extension() {
-                        let ext = ext.to_string_lossy().to_lowercase();
-                        if ext == "jpg" || ext == "jpeg" || ext == "png" {
-                            let file_name = path.file_name().unwrap().to_string_lossy();
-                            if !file_name.starts_with('.') {
-                                image_paths.push((path.to_path_buf(), label));
+
+        // 训练集同时合并官方 train 和 val 目录
+        let source_dirs: Vec<&str> = if *split_name == "train" {
+            vec!["train", "val"]
+        } else {
+            vec![split_dir]
+        };
+
+        for dir in &source_dirs {
+            for (class_name, label) in [("NORMAL", 0), ("PNEUMONIA", 1)] {
+                let class_dir = args.root.join(dir).join(class_name);
+                if !class_dir.exists() {
+                    eprintln!("警告：目录不存在 {:?}", class_dir);
+                    continue;
+                }
+                for entry in WalkDir::new(&class_dir)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                {
+                    let path = entry.path();
+                    if path.is_file() {
+                        if let Some(ext) = path.extension() {
+                            let ext = ext.to_string_lossy().to_lowercase();
+                            if ext == "jpg" || ext == "jpeg" || ext == "png" {
+                                let file_name = path.file_name().unwrap().to_string_lossy();
+                                if !file_name.starts_with('.') {
+                                    image_paths.push((path.to_path_buf(), label));
+                                }
                             }
                         }
                     }
@@ -66,20 +78,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         image_paths.sort_by(|a, b| a.0.cmp(&b.0));
-        let n = image_paths.len();
-        println!("{}: 找到 {} 张图像", split_name, n);
+        let total = image_paths.len();
+        println!("{}: 找到 {} 张图像", split_name, total);
+
+        let processed_count = AtomicUsize::new(0);
+
+        // 使用 rayon 并行处理图像，单张失败不影响其他图像
+        let results: Vec<(Result<Array3<f32>, String>, i64)> = image_paths
+            .par_iter()
+            .map(|(path, label)| {
+                let result = match load_and_preprocess(path, args.size, &args.mean, &args.std) {
+                    Ok(img) => Ok(img),
+                    Err(e) => {
+                        eprintln!("警告：跳过损坏/无法读取的图像 {:?}: {}", path, e);
+                        Err(format!("{}", e))
+                    }
+                };
+                let cnt = processed_count.fetch_add(1, Ordering::Relaxed) + 1;
+                if cnt % 500 == 0 || cnt == total {
+                    println!("{}: 已处理 {}/{}", split_name, cnt, total);
+                }
+                (result, *label)
+            })
+            .collect();
+
+        // 过滤掉处理失败的图像
+        let valid_results: Vec<(Array3<f32>, i64)> = results
+            .into_iter()
+            .filter_map(|(r, label)| r.ok().map(|img| (img, label)))
+            .collect();
+
+        let n = valid_results.len();
+        let skipped = total - n;
+        if skipped > 0 {
+            println!("{}: 跳过 {} 张损坏/无法读取的图像", split_name, skipped);
+        }
+        println!("{}: 有效图像 {} 张，开始写入缓存...", split_name, n);
 
         let mut images = Array4::<f32>::zeros((n, 3, size, size));
         let mut labels = ndarray::Array1::<i64>::zeros(n);
 
-        for (i, (path, label)) in image_paths.iter().enumerate() {
-            let img = load_and_preprocess(path, args.size, &args.mean, &args.std)?;
-            images.slice_mut(s![i, .., .., ..]).assign(&img);
+        for (i, (img, label)) in valid_results.iter().enumerate() {
+            images.slice_mut(s![i, .., .., ..]).assign(img);
             labels[i] = *label;
-
-            if (i + 1) % 500 == 0 || i + 1 == n {
-                println!("{}: 已处理 {}/{}", split_name, i + 1, n);
-            }
         }
 
         let images_path = args.out.join(format!("{}_images.npy", split_name));
