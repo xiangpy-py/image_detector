@@ -9,10 +9,23 @@ wheels/
 # Virtual environments
 .venv
 
+# IDE
+.idea/
+.vscode/
+*.swp
+*.bak
 
+# OS metadata
+.DS_Store
+Thumbs.db
+__MACOSX/
 
-database/
-/target
+# Trae AI editor
+.trae/
+
+# Environment
+.env
+.env.local
 
 # Project outputs
 models/
@@ -20,8 +33,23 @@ cache/
 outputs/
 *.pth
 *.npy
+
+# Jupyter
 .ipynb_checkpoints/
 
-# 文档文件
+# Logs
+*.log
+
+# Datasets (never commit raw data)
+database/
+
+# Rust build
+/target
+
+# Local analysis / temporary docs
 题目.md
 WRITING_LOG.md
+*_ANALYSIS.md
+
+# Legacy script (duplicates src-py/download_database.py)
+download_file.py
