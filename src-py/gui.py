@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from config import DEFAULT_THRESHOLD
 from inference import load_trained_model, predict
+from threshold_tuner import load_threshold
 
 
 class InferenceWorker(QThread):
@@ -50,6 +51,8 @@ class PneumoniaGUI(QWidget):
         self.device = None
         self.image_path = None
         self.worker = None
+        self.threshold = DEFAULT_THRESHOLD
+        self._original_pixmap = None
 
         self._build_ui()
         self._load_model()
@@ -106,9 +109,15 @@ class PneumoniaGUI(QWidget):
     def _load_model(self):
         try:
             self.model, self.device = load_trained_model()
-            self.detail_text.setPlainText("模型加载成功。")
+            self.threshold = load_threshold()
+            self.detail_text.setPlainText(
+                f"模型加载成功。\n"
+                f"当前检测阈值: {self.threshold:.4f} "
+                f"({'已加载优化阈值' if self.threshold != DEFAULT_THRESHOLD else '使用默认阈值 0.5'})"
+            )
         except Exception as e:
             QMessageBox.critical(self, "模型加载失败", f"无法加载模型：{e}")
+            self.threshold = DEFAULT_THRESHOLD
 
     def select_image(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -118,16 +127,20 @@ class PneumoniaGUI(QWidget):
             return
 
         self.image_path = path
-        pixmap = QPixmap(path)
-        scaled = pixmap.scaled(
-            self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
-        )
-        self.image_label.setPixmap(scaled)
+        self._original_pixmap = QPixmap(path)
+        self._update_image_display()
         self.detect_btn.setEnabled(True)
         self.result_label.setText("尚未检测")
         self.result_label.setStyleSheet("font-size: 24px; color: gray;")
         self.confidence_bar.setValue(0)
         self.detail_text.setPlainText(f"已选择图像：{path}")
+
+    def _update_image_display(self):
+        if self._original_pixmap and not self._original_pixmap.isNull():
+            scaled = self._original_pixmap.scaled(
+                self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            self.image_label.setPixmap(scaled)
 
     def detect(self):
         if self.image_path is None or self.model is None:
@@ -135,9 +148,13 @@ class PneumoniaGUI(QWidget):
             return
 
         self.detect_btn.setEnabled(False)
-        self.detail_text.setPlainText("正在检测，请稍候...")
+        self.detail_text.setPlainText(
+            f"正在检测，请稍候...\n当前阈值: {self.threshold:.4f}"
+        )
 
-        self.worker = InferenceWorker(self.image_path, self.model, self.device)
+        self.worker = InferenceWorker(
+            self.image_path, self.model, self.device, threshold=self.threshold
+        )
         self.worker.result_ready.connect(self._on_result_ready)
         self.worker.error_occurred.connect(self._on_error)
         self.worker.finished.connect(lambda: self.detect_btn.setEnabled(True))
@@ -165,12 +182,7 @@ class PneumoniaGUI(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self.image_label.pixmap():
-            pixmap = self.image_label.pixmap()
-            scaled = pixmap.scaled(
-                self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
-            self.image_label.setPixmap(scaled)
+        self._update_image_display()
 
 
 def main():
