@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+
+# Added by cargo
+
+/target
+
+# Project outputs
+models/
+cache/
+outputs/
+*.pth
+*.npy
+.ipynb_checkpoints/
+
+# 文档文件
+题目.md
+WRITING_LOG.md
