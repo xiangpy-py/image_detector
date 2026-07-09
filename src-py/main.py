@@ -121,7 +121,7 @@ def main():
     setup_logger()
 
     parser = argparse.ArgumentParser(description="胸部 X 光肺炎检测系统")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
 
     train_parser = subparsers.add_parser("train", help="训练模型")
     train_parser.add_argument(
@@ -145,6 +145,10 @@ def main():
     _add_path_args(download_parser)
 
     args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return
 
     commands = {
         "train": run_train,
