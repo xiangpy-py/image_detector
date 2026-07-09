@@ -20,13 +20,14 @@ def create_test_image(path, size=(512, 512), color=(128, 128, 128)):
 def test_preprocess_image_path():
     with tempfile.TemporaryDirectory() as tmpdir:
         img_path = Path(tmpdir) / "test_xray.jpg"
-        create_test_image(img_path, size=(512, 512))
+        # 使用白色图像，Normalize 后值会大于 1
+        create_test_image(img_path, size=(512, 512), color=(255, 255, 255))
 
         tensor = preprocess_image_path(img_path, size=224)
         assert isinstance(tensor, torch.Tensor)
         assert tensor.shape == (3, 224, 224)
-        # 检查是否经过归一化（值应在 [-2, 2] 范围内，而不是 [0, 1]）
-        assert tensor.min() < 0 or tensor.max() > 1
+        # 检查是否经过归一化（白色图像 Normalize 后应大于 1）
+        assert tensor.max() > 1.0
 
 
 def test_preprocess_image_path_different_size():

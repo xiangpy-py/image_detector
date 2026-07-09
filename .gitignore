@@ -53,3 +53,5 @@ WRITING_LOG.md
 
 # Legacy script (duplicates src-py/download_database.py)
 download_file.py
+project_architecture.png
+.pytest_cache/

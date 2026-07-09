@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from config import CLASS_NAMES, LABEL_MAP, override_paths
+from config import CACHE_SIZE, CLASS_NAMES, IMG_SIZE, LABEL_MAP, override_paths
 
 
 def test_class_names():
@@ -12,6 +12,14 @@ def test_class_names():
 def test_label_map():
     assert LABEL_MAP["NORMAL"] == 0
     assert LABEL_MAP["PNEUMONIA"] == 1
+
+
+def test_img_size():
+    assert IMG_SIZE == 224
+
+
+def test_cache_size():
+    assert CACHE_SIZE == 256
 
 
 def test_override_paths():

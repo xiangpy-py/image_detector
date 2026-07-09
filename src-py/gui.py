@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config import DEFAULT_THRESHOLD
+from config import CACHE_DIR, CACHE_SIZE, DATASET_ROOT, DEFAULT_THRESHOLD, override_paths
 from inference import load_trained_model, predict
 from threshold_tuner import load_threshold
 
@@ -41,26 +41,74 @@ class InferenceWorker(QThread):
             self.error_occurred.emit(str(e))
 
 
+class PreprocessWorker(QThread):
+    """在后台线程运行 Rust 预处理，避免阻塞 GUI。"""
+
+    finished = Signal(bool, str)
+
+    def __init__(self, dataset_root, cache_dir, cache_size, parent=None):
+        super().__init__(parent)
+        self.dataset_root = dataset_root
+        self.cache_dir = cache_dir
+        self.cache_size = cache_size
+
+    def run(self):
+        try:
+            from rust_preprocessor import preprocess_dataset
+
+            train_count, test_count = preprocess_dataset(
+                str(self.dataset_root),
+                str(self.cache_dir),
+                self.cache_size,
+            )
+            self.finished.emit(
+                True, f"预处理完成: 训练集 {train_count} 张, 测试集 {test_count} 张"
+            )
+        except Exception as e:
+            self.finished.emit(False, str(e))
+
+
 class PneumoniaGUI(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("胸部 X 光肺炎检测系统")
-        self.setMinimumSize(900, 500)
+        self.setMinimumSize(1000, 600)
 
         self.model = None
         self.device = None
         self.image_path = None
         self.worker = None
+        self.preprocess_worker = None
         self.threshold = DEFAULT_THRESHOLD
         self._original_pixmap = None
 
         self._build_ui()
         self._load_model()
+        self._check_dataset()
 
     def _build_ui(self):
         main_layout = QHBoxLayout()
 
+        # ─── 左侧：图像 + 检测 ───
         left_layout = QVBoxLayout()
+
+        # 数据集路径显示
+        dataset_layout = QHBoxLayout()
+        dataset_layout.addWidget(QLabel("数据集:"))
+        self.dataset_label = QLabel(str(DATASET_ROOT))
+        self.dataset_label.setStyleSheet("color: gray; font-size: 11px;")
+        self.dataset_label.setWordWrap(True)
+        dataset_layout.addWidget(self.dataset_label, 1)
+        self.dataset_btn = QPushButton("更改")
+        self.dataset_btn.setToolTip("选择数据集根目录（需包含 train/val/test 子目录）")
+        self.dataset_btn.clicked.connect(self.select_dataset)
+        dataset_layout.addWidget(self.dataset_btn)
+        self.preprocess_btn = QPushButton("预处理")
+        self.preprocess_btn.setToolTip("调用 Rust 模块生成图像缓存")
+        self.preprocess_btn.clicked.connect(self.run_preprocess)
+        dataset_layout.addWidget(self.preprocess_btn)
+        left_layout.addLayout(dataset_layout)
+
         self.image_label = QLabel("请选择一张胸部 X 光图像")
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setStyleSheet("border: 1px solid gray; background-color: #f0f0f0;")
@@ -80,7 +128,9 @@ class PneumoniaGUI(QWidget):
         button_layout.addWidget(self.quit_btn)
         left_layout.addLayout(button_layout)
 
+        # ─── 右侧：结果 ───
         right_layout = QVBoxLayout()
+
         self.result_title = QLabel("检测结果")
         self.result_title.setAlignment(Qt.AlignCenter)
         self.result_title.setStyleSheet("font-size: 18px; font-weight: bold;")
@@ -106,6 +156,18 @@ class PneumoniaGUI(QWidget):
         main_layout.addLayout(right_layout, 1)
         self.setLayout(main_layout)
 
+    def _check_dataset(self):
+        """检查数据集和缓存是否存在，给出友好提示。"""
+        train_images = CACHE_DIR / "train_images.npy"
+        train_labels = CACHE_DIR / "train_labels.npy"
+        if not train_images.exists() or not train_labels.exists():
+            self.detail_text.setPlainText(
+                "⚠ 缓存文件不存在。\n"
+                "1. 点击「更改」选择数据集根目录\n"
+                "2. 点击「预处理」生成图像缓存\n"
+                "3. 然后在 CLI 中运行: uv run python src-py/main.py train"
+            )
+
     def _load_model(self):
         try:
             self.model, self.device = load_trained_model()
@@ -116,8 +178,52 @@ class PneumoniaGUI(QWidget):
                 f"({'已加载优化阈值' if self.threshold != DEFAULT_THRESHOLD else '使用默认阈值 0.5'})"
             )
         except Exception as e:
-            QMessageBox.critical(self, "模型加载失败", f"无法加载模型：{e}")
-            self.threshold = DEFAULT_THRESHOLD
+            self.detail_text.setPlainText(
+                f"⚠ 模型未加载: {e}\n"
+                f"请先运行训练: uv run python src-py/main.py train"
+            )
+
+    def select_dataset(self):
+        """打开文件夹对话框选择数据集根目录。"""
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "选择数据集根目录（需包含 train/val/test 子目录）",
+            str(DATASET_ROOT),
+        )
+        if not path:
+            return
+
+        override_paths(dataset_root=path)
+        self.dataset_label.setText(str(DATASET_ROOT))
+        self.detail_text.setPlainText(f"数据集路径已更新: {path}")
+        self._check_dataset()
+
+    def run_preprocess(self):
+        """在后台线程调用 Rust 预处理模块。"""
+        self.preprocess_btn.setEnabled(False)
+        self.detail_text.setPlainText(
+            f"正在预处理数据...\n"
+            f"数据集: {DATASET_ROOT}\n"
+            f"缓存目录: {CACHE_DIR}"
+        )
+
+        if self.preprocess_worker is not None:
+            self.preprocess_worker.deleteLater()
+
+        self.preprocess_worker = PreprocessWorker(
+            DATASET_ROOT, CACHE_DIR, CACHE_SIZE
+        )
+        self.preprocess_worker.finished.connect(self._on_preprocess_finished)
+        self.preprocess_worker.start()
+
+    def _on_preprocess_finished(self, success, message):
+        self.preprocess_btn.setEnabled(True)
+        if success:
+            QMessageBox.information(self, "预处理完成", message)
+            self.detail_text.setPlainText(message)
+        else:
+            QMessageBox.critical(self, "预处理失败", message)
+            self.detail_text.setPlainText(f"预处理失败: {message}")
 
     def select_image(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -152,7 +258,6 @@ class PneumoniaGUI(QWidget):
             f"正在检测，请稍候...\n当前阈值: {self.threshold:.4f}"
         )
 
-        # 清理之前的 worker 避免内存泄漏
         if self.worker is not None:
             self.worker.deleteLater()
 
@@ -167,9 +272,13 @@ class PneumoniaGUI(QWidget):
     def _on_result_ready(self, class_name, confidence, prob):
         self.result_label.setText(class_name)
         if class_name == "PNEUMONIA":
-            self.result_label.setStyleSheet("font-size: 24px; color: red; font-weight: bold;")
+            self.result_label.setStyleSheet(
+                "font-size: 24px; color: red; font-weight: bold;"
+            )
         else:
-            self.result_label.setStyleSheet("font-size: 24px; color: green; font-weight: bold;")
+            self.result_label.setStyleSheet(
+                "font-size: 24px; color: green; font-weight: bold;"
+            )
 
         self.confidence_bar.setValue(int(confidence * 100))
         self.detail_text.setPlainText(

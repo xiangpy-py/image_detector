@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from system import (
+    get_app_data_dir,
     get_default_cache_dir,
     get_default_dataset_root,
     get_default_kaggle_cache_dir,
@@ -17,6 +18,7 @@ from system import (
     is_macos,
     is_windows,
     normalize_path,
+    set_app_data_dir,
 )
 
 
@@ -44,22 +46,37 @@ def test_normalize_path():
     assert path.exists()
 
 
+def test_get_app_data_dir():
+    app_dir = get_app_data_dir()
+    assert isinstance(app_dir, Path)
+    assert app_dir.is_absolute()
+
+
+def test_set_app_data_dir():
+    original = get_app_data_dir()
+    test_path = Path("/tmp/test_pneumonia_dir")
+    set_app_data_dir(test_path)
+    assert get_app_data_dir() == test_path
+    # 恢复
+    set_app_data_dir(original)
+
+
 def test_get_default_cache_dir():
-    root = Path("/tmp/fake_project")
-    cache = get_default_cache_dir(root)
-    assert cache == root / "cache"
+    cache = get_default_cache_dir()
+    assert isinstance(cache, Path)
+    assert cache.is_absolute()
 
 
 def test_get_default_models_dir():
-    root = Path("/tmp/fake_project")
-    models = get_default_models_dir(root)
-    assert models == root / "models"
+    models = get_default_models_dir()
+    assert isinstance(models, Path)
+    assert models.is_absolute()
 
 
 def test_get_default_outputs_dir():
-    root = Path("/tmp/fake_project")
-    outputs = get_default_outputs_dir(root)
-    assert outputs == root / "outputs"
+    outputs = get_default_outputs_dir()
+    assert isinstance(outputs, Path)
+    assert outputs.is_absolute()
 
 
 def test_get_default_dataset_root_env_override(monkeypatch):
@@ -76,13 +93,11 @@ def test_get_default_kaggle_cache_dir_env_override(monkeypatch):
 
 def test_get_default_cache_dir_env_override(monkeypatch):
     monkeypatch.setenv("CACHE_DIR", "/custom/cache")
-    root = Path("/tmp/fake_project")
-    cache = get_default_cache_dir(root)
+    cache = get_default_cache_dir()
     assert str(cache) == "/custom/cache"
 
 
 def test_get_default_models_dir_env_override(monkeypatch):
     monkeypatch.setenv("MODELS_DIR", "/custom/models")
-    root = Path("/tmp/fake_project")
-    models = get_default_models_dir(root)
+    models = get_default_models_dir()
     assert str(models) == "/custom/models"

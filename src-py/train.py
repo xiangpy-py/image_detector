@@ -24,7 +24,7 @@ from metrics import evaluate_model, get_pos_weight
 from model import build_model, set_seed
 
 
-def train():
+def train(resume_from=None):
     set_seed()
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -53,11 +53,31 @@ def train():
     scaler = GradScaler(device=str(device)) if use_amp else None
     amp_enabled = use_amp
 
+    start_epoch = 0
     best_f1 = 0.0
     patience_counter = 0
     history = {"train_loss": [], "val_loss": [], "val_f1": [], "val_auc": []}
 
-    for epoch in range(EPOCHS):
+    # --- Resume 支持 ---
+    resume_path = None
+    if resume_from:
+        resume_path = Path(resume_from)
+        if not resume_path.exists():
+            raise FileNotFoundError(f"指定的 checkpoint 不存在: {resume_path}")
+
+    if resume_path:
+        logger.info(f"从 checkpoint 恢复训练: {resume_path}")
+        checkpoint = torch.load(resume_path, map_location=device, weights_only=True)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if "scheduler_state_dict" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        start_epoch = checkpoint.get("epoch", 0) + 1
+        best_f1 = checkpoint.get("best_f1", 0.0)
+        logger.info(f"恢复至 epoch {start_epoch}, 当前最佳 val_f1={best_f1:.4f}")
+    # -------------------
+
+    for epoch in range(start_epoch, EPOCHS):
         model.train()
         running_loss = 0.0
 

@@ -1,156 +1,36 @@
 use clap::Parser;
-use image::{imageops::FilterType, ImageReader, ImageError};
-use ndarray::{s, Array3, Array4};
-use ndarray_npy::write_npy;
-use rayon::prelude::*;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use walkdir::WalkDir;
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(about = "将胸部 X 光 JPEG 图像预处理为 .npy 缓存")]
+#[command(about = "将胸部 X 光 JPEG 图像预处理为 .npy 缓存 (uint8, 256x256)")]
 struct Args {
-    #[arg(long, env = "DATASET_ROOT", default_value = "/root/autodl-tmp/datasets/paultimothymooney/chest-xray-pneumonia/versions/2/chest_xray/chest_xray")]
+    #[arg(
+        long,
+        env = "DATASET_ROOT",
+        default_value = "/root/autodl-tmp/datasets/paultimothymooney/chest-xray-pneumonia/versions/2/chest_xray/chest_xray"
+    )]
     root: PathBuf,
 
     #[arg(long, env = "CACHE_DIR", default_value = "cache")]
     out: PathBuf,
 
-    #[arg(long, default_value_t = 224)]
+    #[arg(long, default_value_t = 256)]
     size: u32,
-
-    #[arg(long, value_delimiter = ',', default_values = ["0.485", "0.456", "0.406"])]
-    mean: Vec<f32>,
-
-    #[arg(long, value_delimiter = ',', default_values = ["0.229", "0.224", "0.225"])]
-    std: Vec<f32>,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
     let args = Args::parse();
-    let size = args.size as usize;
-
-    if args.mean.len() != 3 || args.std.len() != 3 {
-        eprintln!("错误：--mean 和 --std 必须各包含 3 个浮点数");
-        std::process::exit(1);
-    }
-
-    fs::create_dir_all(&args.out)?;
-
-    let splits = [("train", "train"), ("test", "test")];
-
-    for (split_dir, split_name) in &splits {
-        let mut image_paths: Vec<(PathBuf, i64)> = Vec::new();
-
-        // 训练集同时合并官方 train 和 val 目录
-        let source_dirs: Vec<&str> = if *split_name == "train" {
-            vec!["train", "val"]
-        } else {
-            vec![split_dir]
-        };
-
-        for dir in &source_dirs {
-            for (class_name, label) in [("NORMAL", 0), ("PNEUMONIA", 1)] {
-                let class_dir = args.root.join(dir).join(class_name);
-                if !class_dir.exists() {
-                    eprintln!("警告：目录不存在 {:?}", class_dir);
-                    continue;
-                }
-                for entry in WalkDir::new(&class_dir)
-                    .into_iter()
-                    .filter_map(|e| e.ok())
-                {
-                    let path = entry.path();
-                    if path.is_file() {
-                        if let Some(ext) = path.extension() {
-                            let ext = ext.to_string_lossy().to_lowercase();
-                            if ext == "jpg" || ext == "jpeg" || ext == "png" {
-                                let file_name = path.file_name().unwrap().to_string_lossy();
-                                if !file_name.starts_with('.') {
-                                    image_paths.push((path.to_path_buf(), label));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    match crate::preprocess_dataset_impl(
+        args.root.to_str().unwrap(),
+        args.out.to_str().unwrap(),
+        args.size,
+    ) {
+        Ok((train_count, test_count)) => {
+            println!("处理完成: train={}, test={}", train_count, test_count);
         }
-
-        image_paths.sort_by(|a, b| a.0.cmp(&b.0));
-        let total = image_paths.len();
-        println!("{}: 找到 {} 张图像", split_name, total);
-
-        let processed_count = AtomicUsize::new(0);
-
-        // 使用 rayon 并行处理图像，单张失败不影响其他图像
-        let results: Vec<(Result<Array3<f32>, String>, i64)> = image_paths
-            .par_iter()
-            .map(|(path, label)| {
-                let result = match load_and_preprocess(path, args.size, &args.mean, &args.std) {
-                    Ok(img) => Ok(img),
-                    Err(e) => {
-                        eprintln!("警告：跳过损坏/无法读取的图像 {:?}: {}", path, e);
-                        Err(format!("{}", e))
-                    }
-                };
-                let cnt = processed_count.fetch_add(1, Ordering::Relaxed) + 1;
-                if cnt % 500 == 0 || cnt == total {
-                    println!("{}: 已处理 {}/{}", split_name, cnt, total);
-                }
-                (result, *label)
-            })
-            .collect();
-
-        // 过滤掉处理失败的图像
-        let valid_results: Vec<(Array3<f32>, i64)> = results
-            .into_iter()
-            .filter_map(|(r, label)| r.ok().map(|img| (img, label)))
-            .collect();
-
-        let n = valid_results.len();
-        let skipped = total - n;
-        if skipped > 0 {
-            println!("{}: 跳过 {} 张损坏/无法读取的图像", split_name, skipped);
-        }
-        println!("{}: 有效图像 {} 张，开始写入缓存...", split_name, n);
-
-        let mut images = Array4::<f32>::zeros((n, 3, size, size));
-        let mut labels = ndarray::Array1::<i64>::zeros(n);
-
-        for (i, (img, label)) in valid_results.iter().enumerate() {
-            images.slice_mut(s![i, .., .., ..]).assign(img);
-            labels[i] = *label;
-        }
-
-        let images_path = args.out.join(format!("{}_images.npy", split_name));
-        let labels_path = args.out.join(format!("{}_labels.npy", split_name));
-
-        write_npy(&images_path, &images)?;
-        write_npy(&labels_path, &labels)?;
-
-        println!("已保存: {:?} 和 {:?}", images_path, labels_path);
-    }
-
-    Ok(())
-}
-
-fn load_and_preprocess(
-    path: &Path,
-    size: u32,
-    mean: &[f32],
-    std: &[f32],
-) -> Result<Array3<f32>, ImageError> {
-    let img = ImageReader::open(path)?.decode()?;
-    let img = img.resize_exact(size, size, FilterType::Lanczos3).to_rgb8();
-
-    let mut tensor = Array3::<f32>::zeros((3, size as usize, size as usize));
-    for (x, y, pixel) in img.enumerate_pixels() {
-        for c in 0..3 {
-            let val = pixel[c] as f32 / 255.0;
-            tensor[[c, y as usize, x as usize]] = (val - mean[c]) / std[c];
+        Err(e) => {
+            eprintln!("错误: {}", e);
+            std::process::exit(1);
         }
     }
-
-    Ok(tensor)
 }

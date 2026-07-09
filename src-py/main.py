@@ -1,5 +1,4 @@
 import argparse
-import subprocess
 import sys
 from pathlib import Path
 
@@ -9,10 +8,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import (
     CACHE_DIR,
+    CACHE_SIZE,
     DATASET_ROOT,
-    IMAGENET_MEAN,
-    IMAGENET_STD,
-    IMG_SIZE,
     override_paths,
 )
 from logger_config import setup_logger
@@ -30,19 +27,25 @@ def _add_path_args(parser):
         "--cache-dir",
         type=Path,
         default=None,
-        help="缓存目录（默认从环境变量 CACHE_DIR 或 ./cache 获取）",
+        help="缓存目录（默认从环境变量 CACHE_DIR 或应用数据目录获取）",
     )
     parser.add_argument(
         "--models-dir",
         type=Path,
         default=None,
-        help="模型保存目录（默认从环境变量 MODELS_DIR 或 ./models 获取）",
+        help="模型保存目录（默认从环境变量 MODELS_DIR 或应用数据目录获取）",
     )
     parser.add_argument(
         "--outputs-dir",
         type=Path,
         default=None,
-        help="输出目录（默认从环境变量 OUTPUTS_DIR 或 ./outputs 获取）",
+        help="输出目录（默认从环境变量 OUTPUTS_DIR 或应用数据目录获取）",
+    )
+    parser.add_argument(
+        "--app-data-dir",
+        type=Path,
+        default=None,
+        help="应用数据目录（设置后会自动推导 cache/models/outputs）",
     )
 
 
@@ -52,6 +55,7 @@ def _apply_path_args(args):
         cache_dir=args.cache_dir,
         models_dir=args.models_dir,
         outputs_dir=args.outputs_dir,
+        app_data_dir=getattr(args, "app_data_dir", None),
     )
 
 
@@ -59,7 +63,7 @@ def run_train(args):
     _apply_path_args(args)
     from train import train
 
-    train()
+    train(resume_from=args.resume)
 
 
 def run_evaluate(args):
@@ -78,41 +82,27 @@ def run_gui(args):
 
 def run_cache(args):
     _apply_path_args(args)
-    binary = Path("target/release/preprocess")
-    if is_windows():
-        binary = binary.with_suffix(".exe")
-
-    if not binary.exists():
-        logger.info("未找到 Rust 预处理二进制文件，尝试编译...")
-        subprocess.run(["cargo", "build", "--release", "--bin", "preprocess"], check=True)
-
-    # 编译后再次确认二进制存在
-    if not binary.exists():
-        raise FileNotFoundError(f"Rust 预处理二进制文件未找到: {binary}")
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-    mean_str = ",".join(str(v) for v in IMAGENET_MEAN)
-    std_str = ",".join(str(v) for v in IMAGENET_STD)
+    try:
+        from rust_preprocessor import preprocess_dataset
+    except ImportError:
+        logger.error(
+            "Rust 扩展未安装。请先在项目根目录运行:\n"
+            "  maturin develop    # 开发模式\n"
+            "  maturin build      # 生产模式\n"
+            "如果未安装 maturin: pip install maturin"
+        )
+        raise
 
-    cmd = [
-        str(binary),
-        "--root",
-        str(DATASET_ROOT),
-        "--out",
-        str(CACHE_DIR),
-        "--size",
-        str(IMG_SIZE),
-        "--mean",
-        mean_str,
-        "--std",
-        std_str,
-    ]
-
-    if is_windows():
-        subprocess.run(cmd, check=True, shell=False)
-    else:
-        subprocess.run(cmd, check=True)
+    logger.info(
+        f"开始 Rust 预处理: root={DATASET_ROOT}, out={CACHE_DIR}, size={CACHE_SIZE}"
+    )
+    train_count, test_count = preprocess_dataset(
+        str(DATASET_ROOT), str(CACHE_DIR), CACHE_SIZE
+    )
+    logger.info(f"Rust 预处理完成: train={train_count}, test={test_count}")
 
 
 def run_download(args):
@@ -134,6 +124,12 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     train_parser = subparsers.add_parser("train", help="训练模型")
+    train_parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="从指定 checkpoint 恢复训练",
+    )
     _add_path_args(train_parser)
 
     eval_parser = subparsers.add_parser("evaluate", help="评估模型并生成图表")

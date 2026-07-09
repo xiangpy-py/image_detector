@@ -1,30 +1,21 @@
 [package]
-name = "image_detector"
+name = "rust_preprocessor"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+name = "rust_preprocessor"
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
 clap = { version = "4.5.23", features = ["derive", "env"] }
 image = "0.25.10"
 ndarray = "0.17.2"
 ndarray-npy = "0.10.0"
-rand = "0.10.1"
+pyo3 = { version = "0.24", features = ["extension-module"] }
 rayon = "1.10"
-walkdir = "2.5.0"
-clap = { version = "4.5.23", features = ["derive", "env"] }
-image = "0.25.10"
-ndarray = "0.17.2"
-ndarray-npy = "0.10.0"
-rand = "0.10.1"
 walkdir = "2.5.0"
 
 [[bin]]
 name = "preprocess"
 path = "src/bin/preprocess.rs"
-
-
-[source.crates-io]
-replace-with = 'tuna'
-
-[source.tuna]
-registry = "https://mirrors.tuna.tsinghua.edu.cn/git/crates.io-index.git"

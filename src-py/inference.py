@@ -39,6 +39,18 @@ def predict(image_path, model=None, device=None, threshold=None):
     return class_name, confidence, prob
 
 
+def _infer_batch(batch_paths, model, device):
+    """推理单个 batch，确保 GPU 张量在该函数返回后立即释放。"""
+    batch = torch.stack(
+        [preprocess_image_path(path, size=IMG_SIZE) for path in batch_paths]
+    ).to(device)
+    with torch.no_grad():
+        logits = model(batch)
+        probs = torch.sigmoid(logits).cpu().numpy().flatten()
+    # 返回 CPU numpy 后，局部 GPU 张量随函数返回失去引用，可被 GC 回收
+    return probs
+
+
 def predict_batch(image_paths, model=None, device=None, threshold=None, batch_size=32):
     if model is None:
         model, device = load_trained_model(device=device)
@@ -49,14 +61,7 @@ def predict_batch(image_paths, model=None, device=None, threshold=None, batch_si
     results = []
     for i in range(0, len(image_paths), batch_size):
         batch_paths = image_paths[i : i + batch_size]
-        batch_tensors = [
-            preprocess_image_path(path, size=IMG_SIZE) for path in batch_paths
-        ]
-        batch = torch.stack(batch_tensors).to(device)
-
-        with torch.no_grad():
-            logits = model(batch)
-            probs = torch.sigmoid(logits).cpu().numpy().flatten()
+        probs = _infer_batch(batch_paths, model, device)
 
         for path, prob in zip(batch_paths, probs):
             label = 1 if prob >= threshold else 0

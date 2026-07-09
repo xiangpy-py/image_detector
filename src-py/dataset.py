@@ -1,13 +1,17 @@
 import numpy as np
 import torch
+from PIL import Image
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset
-from torchvision.transforms import functional as TF
+from torchvision import transforms
 
 from config import (
     BATCH_SIZE,
     CACHE_DIR,
     CLASS_NAMES,
+    IMAGENET_MEAN,
+    IMAGENET_STD,
+    IMG_SIZE,
     NUM_WORKERS,
     PIN_MEMORY,
     RANDOM_SEED,
@@ -15,9 +19,40 @@ from config import (
 )
 
 
+def _get_train_transforms():
+    """训练数据增强：在 uint8 图像上先做空间变换，再 ToTensor + Normalize。"""
+    return transforms.Compose(
+        [
+            transforms.RandomCrop(IMG_SIZE),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(10),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        ]
+    )
+
+
+def _get_val_transforms():
+    """验证/测试预处理：CenterCrop + ToTensor + Normalize。"""
+    return transforms.Compose(
+        [
+            transforms.CenterCrop(IMG_SIZE),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        ]
+    )
+
+
 class CachedDataset(Dataset):
+    """从 Rust 预处理生成的 uint8 .npy 缓存加载数据。
+
+    缓存图像格式: (N, 3, H, W) uint8, 其中 H=W=256。
+    __getitem__ 中将 (C, H, W) 转为 PIL Image 后应用 torchvision transforms。
+    """
+
     def __init__(self, images, labels, transform=None):
-        self.images = torch.from_numpy(images).float()
+        # 保持为 numpy uint8, 不在 __init__ 中做 ToTensor/Normalize
+        self.images = images
         self.labels = torch.from_numpy(labels).long()
         self.transform = transform
 
@@ -25,23 +60,15 @@ class CachedDataset(Dataset):
         return len(self.labels)
 
     def __getitem__(self, idx):
+        # 取出单张图像: (3, 256, 256) uint8
         image = self.images[idx]
+        # (C, H, W) -> (H, W, C) for PIL
+        image = np.transpose(image, (1, 2, 0))
+        image = Image.fromarray(image)
         label = self.labels[idx]
         if self.transform:
             image = self.transform(image)
         return image, label
-
-
-def train_transform(image):
-    if torch.rand(1).item() > 0.5:
-        image = TF.hflip(image)
-    angle = torch.empty(1).uniform_(-10, 10).item()
-    image = TF.rotate(image, angle, interpolation=TF.InterpolationMode.BILINEAR)
-    return image
-
-
-def val_transform(image):
-    return image
 
 
 def load_cached_data(split="train"):
@@ -54,6 +81,14 @@ def load_cached_data(split="train"):
         )
     images = np.load(images_path)
     labels = np.load(labels_path)
+
+    # 格式校验：若缓存仍是旧版 float32 (已归一化) 则给出友好提示
+    if images.dtype != np.uint8:
+        raise ValueError(
+            f"检测到旧版缓存格式 (dtype={images.dtype})，"
+            "请删除 cache 目录后重新运行 `uv run python src-py/main.py cache` 生成新缓存。"
+        )
+
     return images, labels
 
 
@@ -80,12 +115,12 @@ def get_dataloaders():
     )
 
     train_dataset = CachedDataset(
-        train_images[train_idx], train_labels[train_idx], transform=train_transform
+        train_images[train_idx], train_labels[train_idx], transform=_get_train_transforms()
     )
     val_dataset = CachedDataset(
-        train_images[val_idx], train_labels[val_idx], transform=val_transform
+        train_images[val_idx], train_labels[val_idx], transform=_get_val_transforms()
     )
-    test_dataset = CachedDataset(test_images, test_labels, transform=val_transform)
+    test_dataset = CachedDataset(test_images, test_labels, transform=_get_val_transforms())
 
     train_loader = _build_dataloader(train_dataset, shuffle=True)
     val_loader = _build_dataloader(val_dataset, shuffle=False)

@@ -16,20 +16,6 @@ def get_pos_weight(labels, device):
 
 
 def evaluate_model(model, dataloader, device, criterion=None):
-    """
-    评估模型在给定数据集上的性能。
-
-    Args:
-        model: PyTorch 模型
-        dataloader: DataLoader
-        device: 计算设备 (cuda/cpu)
-        criterion: 可选的损失函数；如果为 None，则不计算 loss
-
-    Returns:
-        metrics: 字典，包含各项评估指标
-        all_labels: 真实标签数组
-        all_probs: 预测概率数组
-    """
     model.eval()
     all_labels = []
     all_probs = []
