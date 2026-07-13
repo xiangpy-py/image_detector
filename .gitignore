@@ -55,3 +55,7 @@ WRITING_LOG.md
 download_file.py
 project_architecture.png
 .pytest_cache/
+结果.txt
+test_gui_import.py
+history.json
+AGENTS.md

@@ -13,7 +13,7 @@ from dataset import get_dataloaders, load_cached_data
 from logger_config import setup_logger
 from model import build_model
 from threshold_tuner import find_best_threshold, save_threshold
-from metrics import evaluate_model, get_criterion, get_pos_weight
+from metrics import evaluate_model, get_loss_function, get_pos_weight
 
 
 def evaluate_split(model, dataloader, device, criterion, split_name, threshold=0.5):
@@ -120,7 +120,7 @@ def run_evaluation():
 
     train_images, train_labels = load_cached_data("train")
     pos_weight = get_pos_weight(train_labels, device)
-    criterion = get_criterion(device, pos_weight)
+    criterion = get_loss_function(device, pos_weight=pos_weight)
 
     val_metrics, val_labels, val_probs = evaluate_split(
         model, val_loader, device, criterion, "Val"

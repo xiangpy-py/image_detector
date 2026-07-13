@@ -29,7 +29,7 @@ LABEL_MAP = {"NORMAL": 0, "PNEUMONIA": 1}
 IMG_SIZE = 224
 CACHE_SIZE = 256
 BATCH_SIZE = 32
-EPOCHS = 20
+EPOCHS = 50
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-4
 VAL_SIZE = 0.15
@@ -41,11 +41,32 @@ PIN_MEMORY = True
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
-EARLY_STOP_PATIENCE = 7
-SCHEDULER_PATIENCE = 3
+EARLY_STOP_PATIENCE = 10
+SCHEDULER_PATIENCE = 5
 SCHEDULER_FACTOR = 0.5
 
 DEFAULT_THRESHOLD = 0.5
+
+# ─── 模型架构选择 ───
+# "resnet50" | "efficientnet_b0" | "efficientnet_b4" | "convnext_tiny"
+MODEL_ARCH = "efficientnet_b0"
+DROPOUT_RATE = 0.3
+
+# ─── 训练策略优化 ───
+WARMUP_EPOCHS = 3
+USE_GRADIENT_CLIP = True
+GRAD_CLIP_NORM = 1.0
+USE_EMA = True
+EMA_DECAY = 0.999
+
+# ─── 损失函数选择 ───
+# "bce" | "focal"
+LOSS_TYPE = "focal"
+FOCAL_ALPHA = 0.25
+FOCAL_GAMMA = 2.0
+
+# ─── 增强策略 ───
+USE_STRONG_AUGMENT = True
 
 
 def override_paths(

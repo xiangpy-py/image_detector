@@ -68,7 +68,8 @@ _DATASET_REGISTRY: dict | None = None
 
 def _get_dataset_registry_path() -> Path:
     """返回数据集注册表 JSON 文件路径。"""
-    return get_app_data_dir() / "datasets.json"
+    # 默认使用项目根目录下的 datasets.json
+    return Path(__file__).resolve().parent.parent / "datasets.json"
 
 
 def load_dataset_registry() -> dict:
@@ -310,28 +311,32 @@ def get_default_cache_dir() -> Path:
     env_cache = os.getenv("CACHE_DIR")
     if env_cache:
         return Path(env_cache)
-    return get_app_data_dir() / "cache"
+    # 默认使用项目根目录下的 cache/
+    return Path(__file__).resolve().parent.parent / "cache"
 
 
 def get_default_models_dir() -> Path:
     env_models = os.getenv("MODELS_DIR")
     if env_models:
         return Path(env_models)
-    return get_app_data_dir() / "models"
+    # 默认使用项目根目录下的 models/
+    return Path(__file__).resolve().parent.parent / "models"
 
 
 def get_default_outputs_dir() -> Path:
     env_outputs = os.getenv("OUTPUTS_DIR")
     if env_outputs:
         return Path(env_outputs)
-    return get_app_data_dir() / "outputs"
+    # 默认使用项目根目录下的 outputs/
+    return Path(__file__).resolve().parent.parent / "outputs"
 
 
 def get_default_kaggle_cache_dir() -> Path:
     env_kaggle = os.getenv("KAGGLEHUB_CACHE")
     if env_kaggle:
         return Path(env_kaggle)
-    return get_app_data_dir() / "kaggle_cache"
+    # 默认使用项目根目录下的 kaggle_cache/
+    return Path(__file__).resolve().parent.parent / "kaggle_cache"
 
 
 # ─── 多进程 ───

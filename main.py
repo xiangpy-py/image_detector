@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""胸部 X 光肺炎检测系统 —— 项目入口。
-
-使用方式:
-    python main.py <command> [options]
-
-命令:
-    train       训练模型
-    evaluate    评估模型并生成图表
-    gui         启动图形界面
-    cache       生成图像缓存（Rust）
-    download    下载数据集
-    dataset     管理数据集（add / list / remove / set）
-
-环境变量配置示例:
-    export DATASET_ROOT=/path/to/dataset
-    export DATASET_ROOTS=/path/to/dataset1,/path/to/dataset2
-
-也可直接通过 pip 安装后使用:
-    pip install -e .
-    image-detector gui
-"""
 
 import sys
 from pathlib import Path

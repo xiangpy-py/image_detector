@@ -1,6 +1,9 @@
 import numpy as np
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from PIL import Image
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
@@ -20,22 +23,33 @@ from config import (
 
 
 def _get_train_transforms():
-    """训练数据增强：在 uint8 图像上先做空间变换，再 ToTensor + Normalize。"""
-    return transforms.Compose(
-        [
-            transforms.RandomCrop(IMG_SIZE),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomRotation(10),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-        ]
-    )
+    """训练数据增强：针对医学影像优化。
+
+    关键改进：
+    - 用 RandomResizedCrop(scale=0.8~1.0) 替代 RandomCrop，避免切掉边缘病理区域
+    - 减小旋转角度到 5°（医学影像大角度旋转不现实）
+    - 添加 ColorJitter 模拟不同曝光条件
+    - 添加 GaussianBlur 模拟图像模糊
+    - 添加 RandomAffine 做轻微缩放/平移
+    """
+    tfms = [
+        transforms.RandomResizedCrop(IMG_SIZE, scale=(0.8, 1.0)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(5),
+        transforms.ColorJitter(brightness=0.1, contrast=0.1),
+        transforms.RandomAffine(degrees=0, translate=(0.05, 0.05), scale=(0.95, 1.05)),
+        transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.5)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+    ]
+    return transforms.Compose(tfms)
 
 
 def _get_val_transforms():
-    """验证/测试预处理：CenterCrop + ToTensor + Normalize。"""
+    """验证/测试预处理：Resize(256) → CenterCrop(224) + Normalize。"""
     return transforms.Compose(
         [
+            transforms.Resize(256),
             transforms.CenterCrop(IMG_SIZE),
             transforms.ToTensor(),
             transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
@@ -92,10 +106,11 @@ def load_cached_data(split="train"):
     return images, labels
 
 
-def _build_dataloader(dataset, shuffle=False):
+def _build_dataloader(dataset, shuffle=False, batch_size=None):
+    bs = batch_size or BATCH_SIZE
     return DataLoader(
         dataset,
-        batch_size=BATCH_SIZE,
+        batch_size=bs,
         shuffle=shuffle,
         num_workers=NUM_WORKERS,
         pin_memory=PIN_MEMORY,
@@ -103,7 +118,7 @@ def _build_dataloader(dataset, shuffle=False):
     )
 
 
-def get_dataloaders():
+def get_dataloaders(batch_size=None):
     train_images, train_labels = load_cached_data("train")
     test_images, test_labels = load_cached_data("test")
 
@@ -122,9 +137,9 @@ def get_dataloaders():
     )
     test_dataset = CachedDataset(test_images, test_labels, transform=_get_val_transforms())
 
-    train_loader = _build_dataloader(train_dataset, shuffle=True)
-    val_loader = _build_dataloader(val_dataset, shuffle=False)
-    test_loader = _build_dataloader(test_dataset, shuffle=False)
+    train_loader = _build_dataloader(train_dataset, shuffle=True, batch_size=batch_size)
+    val_loader = _build_dataloader(val_dataset, shuffle=False, batch_size=batch_size)
+    test_loader = _build_dataloader(test_dataset, shuffle=False, batch_size=batch_size)
 
     return train_loader, val_loader, test_loader
 
