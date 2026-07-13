@@ -13,7 +13,18 @@ from config import (
     override_paths,
 )
 from logger_config import setup_logger
-from system import get_multiprocessing_start_method, is_windows
+from system import (
+    add_dataset,
+    get_active_dataset,
+    get_dataset_path,
+    get_multiprocessing_start_method,
+    is_windows,
+    list_datasets,
+    load_dataset_registry,
+    remove_dataset,
+    save_dataset_registry,
+    set_active_dataset,
+)
 
 
 def _add_path_args(parser):
@@ -22,6 +33,12 @@ def _add_path_args(parser):
         type=Path,
         default=None,
         help="数据集根目录（默认从环境变量 DATASET_ROOT 或平台默认值获取）",
+    )
+    parser.add_argument(
+        "--dataset-name",
+        type=str,
+        default=None,
+        help="已注册的数据集名称（与 --dataset-root 二选一，优先级更高）",
     )
     parser.add_argument(
         "--cache-dir",
@@ -56,6 +73,7 @@ def _apply_path_args(args):
         models_dir=args.models_dir,
         outputs_dir=args.outputs_dir,
         app_data_dir=getattr(args, "app_data_dir", None),
+        dataset_name=getattr(args, "dataset_name", None),
     )
 
 
@@ -112,6 +130,48 @@ def run_download(args):
     download_dataset()
 
 
+def run_dataset(args):
+    """数据集管理子命令。"""
+    if args.dataset_command == "add":
+        path = Path(args.path)
+        if not path.exists():
+            logger.error(f"路径不存在: {path}")
+            return
+        add_dataset(args.name, path)
+        logger.info(f"数据集 '{args.name}' 已添加: {path}")
+    elif args.dataset_command == "remove":
+        try:
+            remove_dataset(args.name)
+            logger.info(f"数据集 '{args.name}' 已移除")
+        except KeyError as e:
+            logger.error(str(e))
+    elif args.dataset_command == "list":
+        reg = load_dataset_registry()
+        datasets = reg.get("datasets", {})
+        active = reg.get("active")
+        if not datasets:
+            logger.info("暂无注册的数据集")
+            return
+        logger.info("已注册的数据集:")
+        for name, info in datasets.items():
+            marker = " ★" if name == active else ""
+            logger.info(f"  {name}: {info['path']}{marker}")
+        if active:
+            logger.info(f"当前默认数据集: {active}")
+    elif args.dataset_command == "set":
+        try:
+            set_active_dataset(args.name)
+            logger.info(f"默认数据集已设置为 '{args.name}'")
+        except KeyError as e:
+            logger.error(str(e))
+    elif args.dataset_command == "show":
+        try:
+            path = get_dataset_path(args.name)
+            logger.info(f"数据集 '{args.name}': {path}")
+        except KeyError as e:
+            logger.error(str(e))
+
+
 def main():
     if is_windows():
         import multiprocessing
@@ -120,7 +180,23 @@ def main():
 
     setup_logger()
 
-    parser = argparse.ArgumentParser(description="胸部 X 光肺炎检测系统")
+    parser = argparse.ArgumentParser(
+        description="胸部 X 光肺炎检测系统",
+        epilog=(
+            "环境变量:\n"
+            "  DATASET_ROOT      单个数据集根目录\n"
+            "  DATASET_ROOTS     多个数据集根目录（逗号分隔）\n"
+            "  CACHE_DIR         缓存目录\n"
+            "  MODELS_DIR        模型保存目录\n"
+            "  OUTPUTS_DIR       输出目录\n"
+            "\n示例:\n"
+            "  python main.py train --dataset-name chest1\n"
+            "  export DATASET_ROOT=/path/to/dataset && python main.py train\n"
+            "  python main.py dataset add chest1 /path/to/chest1\n"
+            "  python main.py dataset list"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     train_parser = subparsers.add_parser("train", help="训练模型")
@@ -144,6 +220,25 @@ def main():
     download_parser = subparsers.add_parser("download", help="下载数据集")
     _add_path_args(download_parser)
 
+    # ─── dataset 子命令 ───
+    dataset_parser = subparsers.add_parser("dataset", help="管理数据集注册表")
+    dataset_sub = dataset_parser.add_subparsers(dest="dataset_command")
+
+    dataset_add = dataset_sub.add_parser("add", help="注册数据集")
+    dataset_add.add_argument("name", help="数据集名称")
+    dataset_add.add_argument("path", help="数据集根目录路径")
+
+    dataset_remove = dataset_sub.add_parser("remove", help="移除数据集")
+    dataset_remove.add_argument("name", help="数据集名称")
+
+    dataset_list = dataset_sub.add_parser("list", help="列出已注册数据集")
+
+    dataset_set = dataset_sub.add_parser("set", help="设置默认数据集")
+    dataset_set.add_argument("name", help="数据集名称")
+
+    dataset_show = dataset_sub.add_parser("show", help="查看数据集路径")
+    dataset_show.add_argument("name", help="数据集名称")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -156,6 +251,7 @@ def main():
         "gui": run_gui,
         "cache": run_cache,
         "download": run_download,
+        "dataset": run_dataset,
     }
 
     commands[args.command](args)
