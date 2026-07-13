@@ -16,23 +16,57 @@ tta_transforms = [
 ]
 
 
+def _infer_arch_from_state_dict(state_dict):
+    """从 state_dict 的 key 推断模型架构。"""
+    keys = set(state_dict.keys())
+    if any("features.denseblock" in k for k in keys):
+        return "densenet121"
+    if any("layer4.2." in k for k in keys):
+        return "resnet50"
+    if any(k.startswith("features") and "block" in k for k in keys):
+        # EfficientNet 也有 features，但 EfficientNet 的 block 命名不同
+        if any("_expand_conv" in k for k in keys):
+            return "efficientnet_b0"
+    if any(k.startswith("stages") for k in keys):
+        return "convnext_tiny"
+    return None
+
+
 def load_trained_model(model_path=None, device=None, use_ema=False):
     if model_path is None:
         model_path = MODELS_DIR / "best_model.pth"
+        # 如果 best_model.pth 不存在，尝试查找最新的时间戳模型
+        if not model_path.exists():
+            candidates = sorted(
+                MODELS_DIR.glob("*_best_model.pth"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if candidates:
+                model_path = candidates[0]
+
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = build_model(pretrained=False)
     checkpoint = torch.load(model_path, map_location=device, weights_only=True)
-    model.load_state_dict(checkpoint["model_state_dict"])
+
+    # 获取架构：优先从 checkpoint 读取，否则从 state_dict 推断
+    arch = checkpoint.get("arch")
+    if arch is None:
+        arch = _infer_arch_from_state_dict(checkpoint["model_state_dict"])
+
+    model = build_model(pretrained=False, arch=arch)
+    model.load_state_dict(checkpoint["model_state_dict"], strict=(arch is not None))
     model.to(device)
     model.eval()
 
     # 如果 checkpoint 包含 EMA 且用户要求使用 EMA
     if use_ema and checkpoint.get("ema_state_dict"):
-        from model import build_model
-        ema_model = build_model(pretrained=False)
-        ema_model.load_state_dict(checkpoint["ema_state_dict"])
+        ema_arch = checkpoint.get("arch")
+        if ema_arch is None:
+            ema_arch = _infer_arch_from_state_dict(checkpoint["ema_state_dict"])
+        ema_model = build_model(pretrained=False, arch=ema_arch)
+        ema_model.load_state_dict(checkpoint["ema_state_dict"], strict=(ema_arch is not None))
         ema_model.to(device)
         ema_model.eval()
         return ema_model, device

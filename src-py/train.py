@@ -17,6 +17,7 @@ from config import (
     GRAD_CLIP_NORM,
     LEARNING_RATE,
     MODELS_DIR,
+    MODEL_ARCH,
     OUTPUTS_DIR,
     SCHEDULER_FACTOR,
     SCHEDULER_PATIENCE,
@@ -270,6 +271,7 @@ def train(resume_from=None):
             torch.save(
                 {
                     "epoch": epoch,
+                    "arch": MODEL_ARCH,
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": plateau_scheduler.state_dict(),
@@ -290,6 +292,7 @@ def train(resume_from=None):
             torch.save(
                 {
                     "epoch": epoch,
+                    "arch": MODEL_ARCH,
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": plateau_scheduler.state_dict(),
@@ -306,6 +309,7 @@ def train(resume_from=None):
         torch.save(
             {
                 "epoch": epoch,
+                "arch": MODEL_ARCH,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": plateau_scheduler.state_dict(),
