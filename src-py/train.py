@@ -74,12 +74,6 @@ class ModelEMA:
         for param in self.model.parameters():
             param.requires_grad = False
         self.decay = decay
-        self.model = type(model)(pretrained=False)
-        self.model.load_state_dict(model.state_dict())
-        self.model.eval()
-        for param in self.model.parameters():
-            param.requires_grad = False
-        self.decay = decay
 
     def update(self, model):
         with torch.no_grad():
