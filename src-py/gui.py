@@ -87,16 +87,16 @@ from threshold_tuner import find_best_threshold, load_threshold, save_threshold
 # ───────────────────────────────────────────────────────────
 
 
-def _style_button(btn, color="#2196F3", text_color="white"):
-    """统一按钮样式。"""
+def _style_button(btn, color="#3B82F6", text_color="white"):
+    """统一按钮样式——现代圆角风格。"""
     btn.setStyleSheet(
         f"""
         QPushButton {{
             background-color: {color};
             color: {text_color};
             border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
+            padding: 8px 18px;
+            border-radius: 8px;
             font-weight: bold;
             font-size: 13px;
         }}
@@ -104,35 +104,42 @@ def _style_button(btn, color="#2196F3", text_color="white"):
             background-color: {color};
             opacity: 0.85;
         }}
+        QPushButton:pressed {{
+            background-color: {color};
+            opacity: 0.7;
+        }}
         QPushButton:disabled {{
-            background-color: #BDBDBD;
-            color: #EEEEEE;
+            background-color: #E2E8F0;
+            color: #94A3B8;
         }}
     """
     )
 
 
 def _style_group(title):
-    """统一分组框样式。"""
+    """统一分组框样式——现代卡片风格。"""
     g = QGroupBox(title)
     g.setStyleSheet(
         """
         QGroupBox {
             font-weight: bold;
             font-size: 14px;
-            border: 1px solid #BDBDBD;
-            border-radius: 6px;
+            border: 1px solid #E2E8F0;
+            border-radius: 10px;
             margin-top: 12px;
-            padding-top: 12px;
-            padding-left: 10px;
-            padding-right: 10px;
-            padding-bottom: 10px;
+            padding-top: 16px;
+            padding-left: 14px;
+            padding-right: 14px;
+            padding-bottom: 14px;
+            background: #FFFFFF;
+            color: #1E293B;
         }
         QGroupBox::title {
             subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 5px;
-            color: #424242;
+            left: 14px;
+            padding: 0 8px;
+            color: #475569;
+            font-size: 13px;
         }
     """
     )
@@ -810,13 +817,16 @@ class PneumoniaGUI(QWidget):
 
     def _build_ui(self):
         main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(12, 12, 12, 12)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(16, 16, 16, 16)
+        main_layout.setSpacing(12)
 
-        # 标题栏
+        # 标题栏 - 带背景色
         title = QLabel("🫁 胸部 X 光肺炎检测系统")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size: 22px; font-weight: bold; color: #1565C0; padding: 8px;")
+        title.setStyleSheet(
+            "font-size: 24px; font-weight: bold; color: #FFFFFF; "
+            "padding: 14px; background-color: #2563EB; border-radius: 10px;"
+        )
         main_layout.addWidget(title)
 
         # 标签页
@@ -824,27 +834,31 @@ class PneumoniaGUI(QWidget):
         self.tabs.setStyleSheet(
             """
             QTabWidget::pane {
-                border: 1px solid #BDBDBD;
-                border-radius: 6px;
-                background: #FAFAFA;
+                border: 1px solid #E2E8F0;
+                border-radius: 10px;
+                background: #FFFFFF;
+                padding: 8px;
             }
             QTabBar::tab {
-                background: #E3F2FD;
-                border: 1px solid #90CAF9;
+                background: #F1F5F9;
+                border: 1px solid #E2E8F0;
                 border-bottom: none;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                padding: 10px 24px;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                padding: 10px 28px;
                 font-weight: bold;
                 font-size: 13px;
-                color: #1565C0;
+                color: #64748B;
+                margin-right: 4px;
             }
             QTabBar::tab:selected {
                 background: #FFFFFF;
-                border-bottom: 2px solid #1565C0;
+                color: #2563EB;
+                border-bottom: 2px solid #2563EB;
             }
-            QTabBar::tab:hover {
-                background: #BBDEFB;
+            QTabBar::tab:hover:!selected {
+                background: #E2E8F0;
+                color: #475569;
             }
         """
         )
@@ -859,19 +873,28 @@ class PneumoniaGUI(QWidget):
         # 状态栏
         status_layout = QHBoxLayout()
         self.status_label = QLabel("就绪")
-        self.status_label.setStyleSheet("color: #666; font-size: 12px; padding: 4px;")
+        self.status_label.setStyleSheet(
+            "color: #64748B; font-size: 12px; padding: 6px 12px; "
+            "background: #F1F5F9; border-radius: 6px;"
+        )
         status_layout.addWidget(self.status_label)
         status_layout.addStretch()
 
         # 模型状态
         self.model_status_label = QLabel("模型: 未加载")
-        self.model_status_label.setStyleSheet("color: #666; font-size: 12px; padding: 4px;")
+        self.model_status_label.setStyleSheet(
+            "color: #EF4444; font-size: 12px; padding: 6px 12px; "
+            "background: #FEF2F2; border-radius: 6px; font-weight: bold;"
+        )
         status_layout.addWidget(self.model_status_label)
-        status_layout.addSpacing(20)
+        status_layout.addSpacing(16)
 
         # 数据集状态
         self.dataset_status_label = QLabel(f"数据集: {DATASET_ROOT}")
-        self.dataset_status_label.setStyleSheet("color: #666; font-size: 12px; padding: 4px;")
+        self.dataset_status_label.setStyleSheet(
+            "color: #64748B; font-size: 12px; padding: 6px 12px; "
+            "background: #F1F5F9; border-radius: 6px;"
+        )
         self.dataset_status_label.setToolTip(str(DATASET_ROOT))
         status_layout.addWidget(self.dataset_status_label)
 
@@ -881,42 +904,129 @@ class PneumoniaGUI(QWidget):
         # 全局样式
         self.setStyleSheet("""
             QWidget {
-                font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+                font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+                background-color: #F8FAFC;
             }
             QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
-                padding: 5px;
-                border: 1px solid #BDBDBD;
+                padding: 8px 10px;
+                border: 1px solid #E2E8F0;
+                border-radius: 8px;
+                background: #FFFFFF;
+                color: #1E293B;
+                font-size: 13px;
+            }
+            QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+                border: 2px solid #3B82F6;
+            }
+            QSpinBox::up-button, QSpinBox::down-button,
+            QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+                width: 20px;
+                border: none;
+                background: #F1F5F9;
                 border-radius: 4px;
-                background: white;
             }
             QTextEdit {
-                border: 1px solid #BDBDBD;
-                border-radius: 4px;
-                background: #263238;
-                color: #ECEFF1;
+                border: 1px solid #E2E8F0;
+                border-radius: 8px;
+                background: #0F172A;
+                color: #E2E8F0;
                 font-family: "Consolas", "Courier New", monospace;
                 font-size: 12px;
+                padding: 8px;
             }
             QTableWidget {
-                border: 1px solid #BDBDBD;
-                border-radius: 4px;
-                gridline-color: #E0E0E0;
+                border: 1px solid #E2E8F0;
+                border-radius: 8px;
+                background: #FFFFFF;
+                gridline-color: #F1F5F9;
+                alternate-background-color: #F8FAFC;
+                selection-background-color: #DBEAFE;
+                selection-color: #1E293B;
+            }
+            QTableWidget::item {
+                padding: 6px;
+                border-bottom: 1px solid #F1F5F9;
             }
             QHeaderView::section {
-                background-color: #E3F2FD;
-                padding: 6px;
+                background-color: #F1F5F9;
+                color: #475569;
+                padding: 10px 12px;
                 font-weight: bold;
-                border: 1px solid #BDBDBD;
+                font-size: 12px;
+                border: none;
+                border-bottom: 2px solid #E2E8F0;
             }
             QProgressBar {
-                border: 1px solid #BDBDBD;
-                border-radius: 4px;
+                border: none;
+                border-radius: 8px;
                 text-align: center;
-                height: 20px;
+                height: 22px;
+                background: #E2E8F0;
+                font-weight: bold;
+                font-size: 11px;
+                color: #475569;
             }
             QProgressBar::chunk {
-                background-color: #2196F3;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #3B82F6, stop:1 #60A5FA);
+                border-radius: 8px;
+            }
+            QGroupBox {
+                background: #FFFFFF;
+                border: 1px solid #E2E8F0;
+                border-radius: 10px;
+                margin-top: 12px;
+                padding-top: 16px;
+                padding-left: 14px;
+                padding-right: 14px;
+                padding-bottom: 14px;
+                font-weight: bold;
+                font-size: 14px;
+                color: #1E293B;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 14px;
+                padding: 0 8px;
+                color: #475569;
+                font-size: 13px;
+            }
+            QCheckBox {
+                font-size: 13px;
+                color: #334155;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
                 border-radius: 4px;
+                border: 1px solid #CBD5E1;
+                background: #FFFFFF;
+            }
+            QCheckBox::indicator:checked {
+                background: #3B82F6;
+                border: 1px solid #3B82F6;
+            }
+            QPushButton {
+                border-radius: 8px;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 8px 18px;
+            }
+            QPushButton:hover {
+                opacity: 0.9;
+            }
+            QPushButton:disabled {
+                background-color: #E2E8F0;
+                color: #94A3B8;
+                border: none;
+            }
+            QDialog {
+                background: #FFFFFF;
+                border-radius: 12px;
+            }
+            QMessageBox {
+                background: #FFFFFF;
             }
         """)
 
@@ -938,16 +1048,16 @@ class PneumoniaGUI(QWidget):
         model_group = _style_group("模型")
         model_layout = QHBoxLayout()
         self.model_path_label = QLabel("自动加载最佳模型")
-        self.model_path_label.setStyleSheet("color: #666; font-size: 12px;")
+        self.model_path_label.setStyleSheet("color: #64748B; font-size: 12px;")
         model_layout.addWidget(self.model_path_label, 1)
         self.load_model_btn = QPushButton("📂 选择模型")
         self.load_model_btn.setToolTip("手动选择 .pth 模型文件")
         self.load_model_btn.clicked.connect(self.select_model_file)
-        _style_button(self.load_model_btn, "#607D8B")
+        _style_button(self.load_model_btn, "#64748B")
         model_layout.addWidget(self.load_model_btn)
         self.reload_model_btn = QPushButton("🔄 重新加载")
         self.reload_model_btn.clicked.connect(self._load_model)
-        _style_button(self.reload_model_btn, "#607D8B")
+        _style_button(self.reload_model_btn, "#64748B")
         model_layout.addWidget(self.reload_model_btn)
         model_group.setLayout(model_layout)
         left.addWidget(model_group)
@@ -958,7 +1068,8 @@ class PneumoniaGUI(QWidget):
         self.image_label = QLabel("请选择一张胸部 X 光图像")
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setStyleSheet(
-            "border: 2px dashed #BDBDBD; background-color: #F5F5F5; color: #9E9E9E; font-size: 16px;"
+            "border: 2px dashed #CBD5E1; background-color: #F8FAFC; color: #94A3B8; "
+            "font-size: 16px; border-radius: 10px;"
         )
         self.image_label.setMinimumSize(480, 480)
         img_layout.addWidget(self.image_label)
@@ -967,20 +1078,21 @@ class PneumoniaGUI(QWidget):
 
         # 按钮
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
         self.select_btn = QPushButton("📂 选择图像")
         self.select_btn.clicked.connect(self.select_image)
-        _style_button(self.select_btn, "#2196F3")
+        _style_button(self.select_btn, "#3B82F6")
         btn_layout.addWidget(self.select_btn)
 
         self.detect_btn = QPushButton("🔍 开始检测")
         self.detect_btn.clicked.connect(self.detect)
         self.detect_btn.setEnabled(False)
-        _style_button(self.detect_btn, "#4CAF50")
+        _style_button(self.detect_btn, "#10B981")
         btn_layout.addWidget(self.detect_btn)
 
         self.batch_btn = QPushButton("📁 批量检测")
         self.batch_btn.clicked.connect(self.batch_detect)
-        _style_button(self.batch_btn, "#FF9800")
+        _style_button(self.batch_btn, "#F59E0B")
         btn_layout.addWidget(self.batch_btn)
 
         left.addLayout(btn_layout)
@@ -995,7 +1107,9 @@ class PneumoniaGUI(QWidget):
 
         self.result_title = QLabel("尚未检测")
         self.result_title.setAlignment(Qt.AlignCenter)
-        self.result_title.setStyleSheet("font-size: 28px; font-weight: bold; color: #9E9E9E;")
+        self.result_title.setStyleSheet(
+            "font-size: 28px; font-weight: bold; color: #94A3B8; padding: 16px;"
+        )
         result_layout.addWidget(self.result_title)
 
         self.confidence_bar = QProgressBar()

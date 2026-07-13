@@ -12,12 +12,14 @@ from config import (
     CLASS_NAMES,
     EARLY_STOP_PATIENCE,
     EPOCHS,
+    FREEZE_BACKBONE,
     GRAD_CLIP_NORM,
     LEARNING_RATE,
     MODELS_DIR,
     OUTPUTS_DIR,
     SCHEDULER_FACTOR,
     SCHEDULER_PATIENCE,
+    UNFREEZE_EPOCH,
     USE_EMA,
     USE_GRADIENT_CLIP,
     WARMUP_EPOCHS,
@@ -26,18 +28,11 @@ from config import (
 from dataset import get_class_counts, get_dataloaders, load_cached_data
 from logger_config import setup_logger
 from metrics import evaluate_model, get_loss_function, get_pos_weight
-from model import build_model, set_seed
+from model import build_model, set_seed, unfreeze_model
 
 
 class WarmupCosineScheduler:
-    """先线性 Warmup，再 Cosine Annealing 的学习率调度器。
-
-    Args:
-        optimizer: 优化器
-        warmup_epochs: warmup 轮数
-        total_epochs: 总训练轮数
-        min_lr: 最小学习率
-    """
+    """先线性 Warmup，再 Cosine Annealing 的学习率调度器。"""
 
     def __init__(self, optimizer, warmup_epochs, total_epochs, min_lr=1e-7):
         self.optimizer = optimizer
@@ -48,10 +43,8 @@ class WarmupCosineScheduler:
 
     def step(self, epoch):
         if epoch < self.warmup_epochs:
-            # 线性 warmup
             lr = self.base_lr * (epoch + 1) / self.warmup_epochs
         else:
-            # cosine annealing
             progress = (epoch - self.warmup_epochs) / max(1, self.total_epochs - self.warmup_epochs)
             lr = self.min_lr + (self.base_lr - self.min_lr) * 0.5 * (1 + torch.cos(torch.tensor(progress * 3.14159265)))
             lr = float(lr)
@@ -62,10 +55,7 @@ class WarmupCosineScheduler:
 
 
 class ModelEMA:
-    """模型参数的指数移动平均 (EMA)。
-
-    EMA 模型在验证时通常比原始模型更稳定、泛化更好。
-    """
+    """模型参数的指数移动平均 (EMA)。"""
 
     def __init__(self, model, decay=0.999):
         import copy
@@ -94,6 +84,11 @@ def _smooth_metric(values, window=3):
     return sum(values[-window:]) / window
 
 
+def _count_trainable_params(model):
+    """统计可训练参数数量。"""
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
 def train(resume_from=None):
     set_seed()
 
@@ -107,8 +102,12 @@ def train(resume_from=None):
     train_images, train_labels = load_cached_data("train")
     logger.info(f"训练集类别分布: {get_class_counts(train_labels)}")
 
-    model = build_model(pretrained=True).to(device)
+    # ─── 两阶段训练：阶段 1 冻结 backbone ───
+    model = build_model(pretrained=True, freeze_backbone=FREEZE_BACKBONE).to(device)
     logger.info(f"模型架构: {type(model).__name__}")
+    logger.info(f"可训练参数: {_count_trainable_params(model):,} / {sum(p.numel() for p in model.parameters()):,}")
+    if FREEZE_BACKBONE:
+        logger.info(f"阶段 1: 冻结 backbone，将在 epoch {UNFREEZE_EPOCH} 后解冻")
 
     pos_weight = get_pos_weight(train_labels, device)
     criterion = get_loss_function(device, pos_weight=pos_weight)
@@ -118,11 +117,9 @@ def train(resume_from=None):
         model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
     )
 
-    # 主学习率调度：Warmup + Cosine Annealing
     lr_scheduler = WarmupCosineScheduler(
         optimizer, warmup_epochs=WARMUP_EPOCHS, total_epochs=EPOCHS
     )
-    # Fallback 调度器：验证 F1 停滞时降低学习率
     plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=SCHEDULER_FACTOR, patience=SCHEDULER_PATIENCE
     )
@@ -131,7 +128,6 @@ def train(resume_from=None):
     scaler = GradScaler(device=str(device)) if use_amp else None
     amp_enabled = use_amp
 
-    # EMA 模型
     ema_model = ModelEMA(model, decay=0.999) if USE_EMA else None
 
     start_epoch = 0
@@ -139,7 +135,7 @@ def train(resume_from=None):
     best_auc = 0.0
     patience_counter = 0
     history = {"train_loss": [], "val_loss": [], "val_f1": [], "val_auc": []}
-    val_f1_history = []  # 用于平滑早停
+    val_f1_history = []
 
     # --- Resume 支持 ---
     resume_path = None
@@ -167,9 +163,15 @@ def train(resume_from=None):
     # -------------------
 
     for epoch in range(start_epoch, EPOCHS):
-        # 更新学习率
+        # ─── 两阶段：在 UNFREEZE_EPOCH 时解冻 backbone ───
+        if FREEZE_BACKBONE and epoch == UNFREEZE_EPOCH:
+            unfreeze_model(model)
+            logger.info(f"🔄 Epoch {epoch + 1}: 解冻 backbone，开始微调全部参数")
+            logger.info(f"可训练参数: {_count_trainable_params(model):,}")
+
         current_lr = lr_scheduler.step(epoch)
-        logger.info(f"Epoch {epoch + 1}/{EPOCHS} | LR={current_lr:.2e}")
+        phase = "微调" if (not FREEZE_BACKBONE or epoch >= UNFREEZE_EPOCH) else "冻结"
+        logger.info(f"Epoch {epoch + 1}/{EPOCHS} | LR={current_lr:.2e} | 阶段: {phase}")
 
         model.train()
         running_loss = 0.0
@@ -187,7 +189,6 @@ def train(resume_from=None):
 
             if amp_enabled:
                 scaler.scale(loss).backward()
-                # Gradient Clipping
                 if USE_GRADIENT_CLIP:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
@@ -199,7 +200,6 @@ def train(resume_from=None):
                     torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
                 optimizer.step()
 
-            # 更新 EMA
             if ema_model:
                 ema_model.update(model)
 
@@ -208,7 +208,6 @@ def train(resume_from=None):
 
         train_loss = running_loss / len(train_loader.dataset)
 
-        # 验证时优先使用 EMA 模型（更稳定）
         eval_model = ema_model.model if ema_model else model
         val_metrics, _, _ = evaluate_model(eval_model, val_loader, device, criterion)
 
@@ -230,18 +229,14 @@ def train(resume_from=None):
             f"lr={current_lr:.2e}"
         )
 
-        # Fallback 学习率调度
         plateau_scheduler.step(val_metrics["f1"])
 
-        # 实时保存历史
         history_path = OUTPUTS_DIR / "history.json"
         with open(history_path, "w", encoding="utf-8") as f:
             json.dump(history, f, indent=2)
 
-        # 平滑后的 F1 用于早停判断（避免单次波动导致过早停止）
         smooth_f1 = _smooth_metric(val_f1_history, window=3)
 
-        # 保存最佳 F1 检查点
         if val_metrics["f1"] > best_f1:
             best_f1 = val_metrics["f1"]
             patience_counter = 0
@@ -263,7 +258,6 @@ def train(resume_from=None):
         else:
             patience_counter += 1
 
-        # 保存最佳 AUC 检查点
         if val_metrics["auc"] > best_auc:
             best_auc = val_metrics["auc"]
             auc_path = MODELS_DIR / "best_auc_model.pth"
@@ -282,7 +276,6 @@ def train(resume_from=None):
             )
             logger.info(f"最佳 AUC 模型已保存，val_auc={best_auc:.4f}")
 
-        # 保存最后一个 epoch 的检查点（崩溃恢复用）
         last_path = MODELS_DIR / "last_model.pth"
         torch.save(
             {
@@ -298,7 +291,6 @@ def train(resume_from=None):
             last_path,
         )
 
-        # 平滑早停：基于 3-epoch 滑动平均 F1
         if patience_counter >= EARLY_STOP_PATIENCE:
             logger.info(f"早停触发 (patience={EARLY_STOP_PATIENCE}, 平滑 F1 未提升)")
             break

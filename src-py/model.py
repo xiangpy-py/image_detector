@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 
-from config import MODEL_ARCH, RANDOM_SEED
+from config import RANDOM_SEED
 
 
 class SEAttention(nn.Module):
@@ -36,7 +36,7 @@ class SEAttention(nn.Module):
 class ResNetWithAttention(nn.Module):
     """ResNet-50 + SE Attention + Dropout 包装器。"""
 
-    def __init__(self, pretrained=True, dropout=0.3):
+    def __init__(self, pretrained=True, dropout=0.5):
         super().__init__()
         weights = models.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
         backbone = models.resnet50(weights=weights)
@@ -79,8 +79,24 @@ class ResNetWithAttention(nn.Module):
         x = self.fc(x)
         return x
 
+    def get_backbone_params(self):
+        """返回 backbone 层的参数（用于冻结）。"""
+        return (
+            list(self.conv1.parameters())
+            + list(self.bn1.parameters())
+            + list(self.layer1.parameters())
+            + list(self.layer2.parameters())
+            + list(self.layer3.parameters())
+            + list(self.layer4.parameters())
+            + list(self.se.parameters())
+        )
 
-def _build_efficientnet_b0(pretrained=True, dropout=0.3):
+    def get_head_params(self):
+        """返回分类头参数。"""
+        return list(self.fc.parameters())
+
+
+def _build_efficientnet_b0(pretrained=True, dropout=0.5):
     weights = models.EfficientNet_B0_Weights.IMAGENET1K_V1 if pretrained else None
     model = models.efficientnet_b0(weights=weights)
     in_features = model.classifier[1].in_features
@@ -93,7 +109,7 @@ def _build_efficientnet_b0(pretrained=True, dropout=0.3):
     return model
 
 
-def _build_efficientnet_b4(pretrained=True, dropout=0.3):
+def _build_efficientnet_b4(pretrained=True, dropout=0.5):
     weights = models.EfficientNet_B4_Weights.IMAGENET1K_V1 if pretrained else None
     model = models.efficientnet_b4(weights=weights)
     in_features = model.classifier[1].in_features
@@ -106,7 +122,7 @@ def _build_efficientnet_b4(pretrained=True, dropout=0.3):
     return model
 
 
-def _build_convnext_tiny(pretrained=True, dropout=0.3):
+def _build_convnext_tiny(pretrained=True, dropout=0.5):
     weights = models.ConvNeXt_Tiny_Weights.IMAGENET1K_V1 if pretrained else None
     model = models.convnext_tiny(weights=weights)
     in_features = model.classifier[2].in_features
@@ -121,13 +137,14 @@ def _build_convnext_tiny(pretrained=True, dropout=0.3):
     return model
 
 
-def build_model(pretrained=True, arch=None, dropout=None):
-    """构建模型，支持多种架构选择。
+def build_model(pretrained=True, arch=None, dropout=None, freeze_backbone=False):
+    """构建模型，支持多种架构选择和冻结层。
 
     Args:
         pretrained: 是否加载 ImageNet 预训练权重
         arch: 模型架构名称，None 则使用 config.MODEL_ARCH
         dropout: Dropout 比率，None 则使用 config.DROPOUT_RATE
+        freeze_backbone: 是否冻结 backbone（只训练分类头）
 
     Returns:
         nn.Module: 构建好的模型
@@ -148,6 +165,38 @@ def build_model(pretrained=True, arch=None, dropout=None):
     else:
         raise ValueError(f"不支持的模型架构: {arch}")
 
+    if freeze_backbone:
+        _freeze_backbone(model, arch)
+
+    return model
+
+
+def _freeze_backbone(model, arch):
+    """冻结模型的 backbone 层，只保留分类头可训练。"""
+    # 首先冻结所有参数
+    for param in model.parameters():
+        param.requires_grad = False
+
+    # 然后解冻分类头
+    if arch == "resnet50":
+        # ResNetWithAttention: 解冻 fc 层
+        for param in model.fc.parameters():
+            param.requires_grad = True
+        # 也解冻 SE 模块（它是我们添加的，需要训练）
+        for param in model.se.parameters():
+            param.requires_grad = True
+    else:
+        # EfficientNet/ConvNeXt: 解冻 classifier
+        for param in model.classifier.parameters():
+            param.requires_grad = True
+
+    return model
+
+
+def unfreeze_model(model):
+    """解冻模型的所有层，用于微调阶段。"""
+    for param in model.parameters():
+        param.requires_grad = True
     return model
 
 

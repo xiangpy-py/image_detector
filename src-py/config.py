@@ -29,7 +29,7 @@ LABEL_MAP = {"NORMAL": 0, "PNEUMONIA": 1}
 IMG_SIZE = 224
 CACHE_SIZE = 256
 BATCH_SIZE = 32
-EPOCHS = 50
+EPOCHS = 30
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-4
 VAL_SIZE = 0.15
@@ -49,8 +49,14 @@ DEFAULT_THRESHOLD = 0.5
 
 # ─── 模型架构选择 ───
 # "resnet50" | "efficientnet_b0" | "efficientnet_b4" | "convnext_tiny"
-MODEL_ARCH = "efficientnet_b0"
-DROPOUT_RATE = 0.3
+MODEL_ARCH = "resnet50"
+DROPOUT_RATE = 0.5
+
+# ─── 两阶段迁移学习 ───
+# 阶段 1: 冻结 backbone，只训练分类头（快速适应）
+# 阶段 2: 解冻全部，微调整个模型
+FREEZE_BACKBONE = True
+UNFREEZE_EPOCH = 10
 
 # ─── 训练策略优化 ───
 WARMUP_EPOCHS = 3
@@ -59,14 +65,8 @@ GRAD_CLIP_NORM = 1.0
 USE_EMA = True
 EMA_DECAY = 0.999
 
-# ─── 损失函数选择 ───
-# "bce" | "focal"
-LOSS_TYPE = "focal"
-FOCAL_ALPHA = 0.25
-FOCAL_GAMMA = 2.0
-
-# ─── 增强策略 ───
-USE_STRONG_AUGMENT = True
+# ─── 损失函数 ───
+LOSS_TYPE = "bce"
 
 
 def override_paths(
