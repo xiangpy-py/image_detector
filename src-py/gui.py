@@ -1443,13 +1443,13 @@ class PneumoniaGUI(QWidget):
             self.model_status_label.setText(
                 f"模型: 已加载 (threshold={self.threshold:.4f})"
             )
-            self.model_status_label.setStyleSheet("color: #4CAF50; font-size: 12px; padding: 4px;")
+            self.model_status_label.setStyleSheet("color: #15803D; font-size: 12px; padding: 4px; background: #F0FDF4; border-radius: 4px; font-weight: bold;")
             self.model_path_label.setText(f"已加载: {MODELS_DIR / 'best_model.pth'}")
         except Exception as e:
             self.model = None
             self.device = None
             self.model_status_label.setText("模型: 未加载")
-            self.model_status_label.setStyleSheet("color: #F44336; font-size: 12px; padding: 4px;")
+            self.model_status_label.setStyleSheet("color: #EF4444; font-size: 12px; padding: 4px; background: #FEF2F2; border-radius: 4px; font-weight: bold;")
             self.model_path_label.setText(f"加载失败: {e}")
 
     def _check_dataset(self):
@@ -1457,10 +1457,10 @@ class PneumoniaGUI(QWidget):
         train_labels = CACHE_DIR / "train_labels.npy"
         if not train_images.exists() or not train_labels.exists():
             self.status_label.setText("⚠️ 缓存文件不存在，请先生成缓存")
-            self.status_label.setStyleSheet("color: #FF9800; font-size: 12px; padding: 4px;")
+            self.status_label.setStyleSheet("color: #B45309; font-size: 12px; padding: 4px; background: #FFFBEB; border-radius: 4px; font-weight: bold;")
         else:
             self.status_label.setText("✅ 就绪")
-            self.status_label.setStyleSheet("color: #4CAF50; font-size: 12px; padding: 4px;")
+            self.status_label.setStyleSheet("color: #15803D; font-size: 12px; padding: 4px; background: #F0FDF4; border-radius: 4px; font-weight: bold;")
 
     # ───────────────────────────────────────────────
     #  检测页面方法
@@ -1479,7 +1479,7 @@ class PneumoniaGUI(QWidget):
             self.model_status_label.setText(
                 f"模型: 已加载 (threshold={self.threshold:.4f})"
             )
-            self.model_status_label.setStyleSheet("color: #4CAF50; font-size: 12px; padding: 4px;")
+            self.model_status_label.setStyleSheet("color: #15803D; font-size: 12px; padding: 4px; background: #F0FDF4; border-radius: 4px; font-weight: bold;")
             QMessageBox.information(self, "成功", "模型加载成功！")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"模型加载失败: {e}")
@@ -1495,7 +1495,7 @@ class PneumoniaGUI(QWidget):
         self._update_image_display()
         self.detect_btn.setEnabled(True)
         self.result_title.setText("尚未检测")
-        self.result_title.setStyleSheet("font-size: 28px; font-weight: bold; color: #9E9E9E;")
+        self.result_title.setStyleSheet("font-size: 28px; font-weight: bold; color: #94A3B8; padding: 16px;")
         self.confidence_bar.setValue(0)
         self.result_detail.setPlainText(f"已选择图像: {path}\n点击「开始检测」进行推理。")
 
@@ -1505,7 +1505,7 @@ class PneumoniaGUI(QWidget):
                 self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
             self.image_label.setPixmap(scaled)
-            self.image_label.setStyleSheet("border: 2px solid #BDBDBD; background-color: #FAFAFA;")
+            self.image_label.setStyleSheet("border: 2px solid #CBD5E1; background-color: #F8FAFC;")
 
     def detect(self):
         if self.image_path is None:
@@ -1622,11 +1622,11 @@ class PneumoniaGUI(QWidget):
         self.result_title.setText(class_name)
         if class_name == "PNEUMONIA":
             self.result_title.setStyleSheet(
-                "font-size: 28px; font-weight: bold; color: #F44336;"
+                "font-size: 28px; font-weight: bold; color: #EF4444; background: #FEF2F2; padding: 16px; border-radius: 10px;"
             )
         else:
             self.result_title.setStyleSheet(
-                "font-size: 28px; font-weight: bold; color: #4CAF50;"
+                "font-size: 28px; font-weight: bold; color: #10B981; background: #F0FDF4; padding: 16px; border-radius: 10px;"
             )
         self.confidence_bar.setValue(int(confidence * 100))
         self.result_detail.setPlainText(

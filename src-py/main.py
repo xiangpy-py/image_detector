@@ -127,7 +127,9 @@ def run_download(args):
     _apply_path_args(args)
     from download_database import download_dataset
 
-    download_dataset()
+    dataset_path = download_dataset(dataset_root=DATASET_ROOT)
+    add_dataset("chest-xray-pneumonia", dataset_path)
+    logger.info(f"数据集已注册为 'chest-xray-pneumonia': {dataset_path}")
 
 
 def run_dataset(args):
