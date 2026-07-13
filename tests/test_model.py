@@ -8,7 +8,7 @@ from model import build_model, set_seed
 def test_build_model_output_dim():
     model = build_model(pretrained=False)
     # 检查最后一层输出维度是否为 1
-    assert model.fc.out_features == 1
+    assert model.classifier[-1].out_features == 1
 
 
 def test_build_model_forward():

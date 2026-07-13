@@ -70,6 +70,7 @@ LOSS_TYPE = "bce"
 FOCAL_ALPHA = 0.25
 FOCAL_GAMMA = 2.0
 LOSS_TYPE = "bce"
+LABEL_SMOOTHING = 0.05
 
 
 def override_paths(

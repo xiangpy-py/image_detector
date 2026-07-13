@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
 
-from config import CLASS_NAMES, FOCAL_ALPHA, FOCAL_GAMMA, LOSS_TYPE
+from config import CLASS_NAMES, FOCAL_ALPHA, FOCAL_GAMMA, LABEL_SMOOTHING, LOSS_TYPE
 from dataset import get_class_counts
 
 
@@ -78,7 +78,9 @@ def get_loss_function(device, pos_weight=None, loss_type=None):
     if loss_type == "focal":
         return FocalLoss(alpha=FOCAL_ALPHA, gamma=FOCAL_GAMMA)
     elif loss_type == "bce":
-        return nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        return LabelSmoothingBCEWithLogitsLoss(
+            smoothing=LABEL_SMOOTHING, pos_weight=pos_weight
+        )
     else:
         raise ValueError(f"不支持的损失函数类型: {loss_type}")
 

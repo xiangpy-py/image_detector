@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from PIL import Image
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms
 
 from config import (
@@ -25,20 +25,17 @@ from config import (
 def _get_train_transforms():
     """训练数据增强：针对医学影像优化。
 
-    关键改进：
-    - 用 RandomResizedCrop(scale=0.8~1.0) 替代 RandomCrop，避免切掉边缘病理区域
-    - 减小旋转角度到 5°（医学影像大角度旋转不现实）
-    - 添加 ColorJitter 模拟不同曝光条件
-    - 添加 GaussianBlur 模拟图像模糊
-    - 添加 RandomAffine 做轻微缩放/平移
+    关键原则：
+    - 只保留几何变换，不破坏组织密度/对比度特征
+    - RandomResizedCrop(scale=0.8~1.0) 避免切掉边缘病理区域
+    - 旋转角度限制在 5° 内
+    - 不用 ColorJitter / GaussianBlur（会破坏诊断特征）
     """
     tfms = [
         transforms.RandomResizedCrop(IMG_SIZE, scale=(0.8, 1.0)),
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(5),
-        transforms.ColorJitter(brightness=0.1, contrast=0.1),
         transforms.RandomAffine(degrees=0, translate=(0.05, 0.05), scale=(0.95, 1.05)),
-        transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.5)),
         transforms.ToTensor(),
         transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
     ]
@@ -106,19 +103,20 @@ def load_cached_data(split="train"):
     return images, labels
 
 
-def _build_dataloader(dataset, shuffle=False, batch_size=None):
+def _build_dataloader(dataset, shuffle=False, batch_size=None, sampler=None):
     bs = batch_size or BATCH_SIZE
     return DataLoader(
         dataset,
         batch_size=bs,
-        shuffle=shuffle,
+        shuffle=shuffle if sampler is None else False,
+        sampler=sampler,
         num_workers=NUM_WORKERS,
         pin_memory=PIN_MEMORY,
         persistent_workers=NUM_WORKERS > 0,
     )
 
 
-def get_dataloaders(batch_size=None):
+def get_dataloaders(batch_size=None, use_weighted_sampler=True):
     train_images, train_labels = load_cached_data("train")
     test_images, test_labels = load_cached_data("test")
 
@@ -137,7 +135,22 @@ def get_dataloaders(batch_size=None):
     )
     test_dataset = CachedDataset(test_images, test_labels, transform=_get_val_transforms())
 
-    train_loader = _build_dataloader(train_dataset, shuffle=True, batch_size=batch_size)
+    # ─── WeightedRandomSampler: 每个 epoch 中两类样本数平衡 ───
+    sampler = None
+    if use_weighted_sampler:
+        train_labels_arr = train_labels[train_idx]
+        counts = np.bincount(train_labels_arr.astype(int))
+        # 计算每个样本的权重: 1 / 该类别样本数
+        weights = 1.0 / counts[train_labels_arr.astype(int)]
+        sampler = WeightedRandomSampler(
+            weights=torch.from_numpy(weights).float(),
+            num_samples=len(train_labels_arr),
+            replacement=True,
+        )
+
+    train_loader = _build_dataloader(
+        train_dataset, shuffle=(sampler is None), batch_size=batch_size, sampler=sampler
+    )
     val_loader = _build_dataloader(val_dataset, shuffle=False, batch_size=batch_size)
     test_loader = _build_dataloader(test_dataset, shuffle=False, batch_size=batch_size)
 

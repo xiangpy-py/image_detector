@@ -55,13 +55,20 @@ class ResNetWithAttention(nn.Module):
         # 在 layer4 后添加 SE 注意力
         self.se = SEAttention(2048, reduction=16)
 
-        # 添加 Dropout + 分类头
+        # 添加 Dropout + 多层分类头（避免单线性层陷入局部最优）
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-        self.fc = nn.Linear(2048, 1)
+        self.classifier = nn.Sequential(
+            nn.Linear(2048, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
+            nn.Linear(512, 1),
+        )
 
-        # 初始化新层的权重
-        nn.init.xavier_uniform_(self.fc.weight)
-        nn.init.zeros_(self.fc.bias)
+        # 初始化新层权重
+        for m in self.classifier.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.zeros_(m.bias)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -76,7 +83,7 @@ class ResNetWithAttention(nn.Module):
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
         x = self.dropout(x)
-        x = self.fc(x)
+        x = self.classifier(x)
         return x
 
     def get_backbone_params(self):
@@ -93,7 +100,7 @@ class ResNetWithAttention(nn.Module):
 
     def get_head_params(self):
         """返回分类头参数。"""
-        return list(self.fc.parameters())
+        return list(self.classifier.parameters())
 
 
 def _build_efficientnet_b0(pretrained=True, dropout=0.5):
@@ -179,8 +186,8 @@ def _freeze_backbone(model, arch):
 
     # 然后解冻分类头
     if arch == "resnet50":
-        # ResNetWithAttention: 解冻 fc 层
-        for param in model.fc.parameters():
+        # ResNetWithAttention: 解冻 classifier 层
+        for param in model.classifier.parameters():
             param.requires_grad = True
         # 也解冻 SE 模块（它是我们添加的，需要训练）
         for param in model.se.parameters():

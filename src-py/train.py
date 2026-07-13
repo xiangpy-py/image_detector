@@ -169,7 +169,28 @@ def train(resume_from=None):
             logger.info(f"🔄 Epoch {epoch + 1}: 解冻 backbone，开始微调全部参数")
             logger.info(f"可训练参数: {_count_trainable_params(model):,}")
 
-        current_lr = lr_scheduler.step(epoch)
+            # 重建 optimizer：避免 AdamW momentum 污染，并降低微调学习率
+            new_lr = LEARNING_RATE / 10
+            optimizer = torch.optim.AdamW(
+                model.parameters(), lr=new_lr, weight_decay=WEIGHT_DECAY
+            )
+            # 新的 lr_scheduler：微调阶段从 new_lr 开始 cosine 下降，无 warmup
+            lr_scheduler = WarmupCosineScheduler(
+                optimizer, warmup_epochs=0, total_epochs=EPOCHS - UNFREEZE_EPOCH, min_lr=1e-7
+            )
+            plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode="max", factor=SCHEDULER_FACTOR, patience=SCHEDULER_PATIENCE
+            )
+            # 重置 EMA 避免旧参数统计干扰
+            if ema_model:
+                ema_model = ModelEMA(model, decay=0.999)
+            logger.info(f"Optimizer 已重建，微调学习率: {new_lr:.2e}")
+
+        # 解冻后使用相对 epoch 计算学习率
+        if FREEZE_BACKBONE and epoch >= UNFREEZE_EPOCH:
+            current_lr = lr_scheduler.step(epoch - UNFREEZE_EPOCH)
+        else:
+            current_lr = lr_scheduler.step(epoch)
         phase = "微调" if (not FREEZE_BACKBONE or epoch >= UNFREEZE_EPOCH) else "冻结"
         logger.info(f"Epoch {epoch + 1}/{EPOCHS} | LR={current_lr:.2e} | 阶段: {phase}")
 
