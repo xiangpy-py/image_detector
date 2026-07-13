@@ -48,8 +48,8 @@ SCHEDULER_FACTOR = 0.5
 DEFAULT_THRESHOLD = 0.5
 
 # ─── 模型架构选择 ───
-# "resnet50" | "efficientnet_b0" | "efficientnet_b4" | "convnext_tiny"
-MODEL_ARCH = "resnet50"
+# "resnet50" | "densenet121" | "efficientnet_b0" | "efficientnet_b4" | "convnext_tiny"
+MODEL_ARCH = "densenet121"
 DROPOUT_RATE = 0.5
 
 # ─── 两阶段迁移学习 ───

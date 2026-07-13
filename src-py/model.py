@@ -103,6 +103,24 @@ class ResNetWithAttention(nn.Module):
         return list(self.classifier.parameters())
 
 
+def _build_densenet121(pretrained=True, dropout=0.5):
+    weights = models.DenseNet121_Weights.IMAGENET1K_V1 if pretrained else None
+    model = models.densenet121(weights=weights)
+    in_features = model.classifier.in_features
+    model.classifier = nn.Sequential(
+        nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
+        nn.Linear(in_features, 512),
+        nn.ReLU(inplace=True),
+        nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
+        nn.Linear(512, 1),
+    )
+    for m in model.classifier.modules():
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            nn.init.zeros_(m.bias)
+    return model
+
+
 def _build_efficientnet_b0(pretrained=True, dropout=0.5):
     weights = models.EfficientNet_B0_Weights.IMAGENET1K_V1 if pretrained else None
     model = models.efficientnet_b0(weights=weights)
@@ -163,6 +181,8 @@ def build_model(pretrained=True, arch=None, dropout=None, freeze_backbone=False)
 
     if arch == "resnet50":
         model = ResNetWithAttention(pretrained=pretrained, dropout=dropout)
+    elif arch == "densenet121":
+        model = _build_densenet121(pretrained=pretrained, dropout=dropout)
     elif arch == "efficientnet_b0":
         model = _build_efficientnet_b0(pretrained=pretrained, dropout=dropout)
     elif arch == "efficientnet_b4":

@@ -1,5 +1,6 @@
 import json
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -91,6 +92,10 @@ def _count_trainable_params(model):
 
 def train(resume_from=None):
     set_seed()
+
+    # 生成本次训练的唯一时间戳前缀，用于区分不同训练运行的模型
+    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    logger.info(f"训练时间戳: {run_timestamp}")
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -261,7 +266,7 @@ def train(resume_from=None):
         if val_metrics["f1"] > best_f1:
             best_f1 = val_metrics["f1"]
             patience_counter = 0
-            best_path = MODELS_DIR / "best_model.pth"
+            best_path = MODELS_DIR / f"{run_timestamp}_best_model.pth"
             torch.save(
                 {
                     "epoch": epoch,
@@ -281,7 +286,7 @@ def train(resume_from=None):
 
         if val_metrics["auc"] > best_auc:
             best_auc = val_metrics["auc"]
-            auc_path = MODELS_DIR / "best_auc_model.pth"
+            auc_path = MODELS_DIR / f"{run_timestamp}_best_auc_model.pth"
             torch.save(
                 {
                     "epoch": epoch,
@@ -297,7 +302,7 @@ def train(resume_from=None):
             )
             logger.info(f"最佳 AUC 模型已保存，val_auc={best_auc:.4f}")
 
-        last_path = MODELS_DIR / "last_model.pth"
+        last_path = MODELS_DIR / f"{run_timestamp}_last_model.pth"
         torch.save(
             {
                 "epoch": epoch,
