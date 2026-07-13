@@ -187,15 +187,19 @@ def main():
         epilog=(
             "环境变量:\n"
             "  DATASET_ROOT      单个数据集根目录\n"
-            "  DATASET_ROOTS     多个数据集根目录（逗号分隔）\n"
-            "  CACHE_DIR         缓存目录\n"
+            "  DATASET_ROOTS     多个数据集根目录（逗号分隔，取第一个）\n"
+            "  CACHE_DIR         图像缓存目录（默认: 项目根目录/cache）\n"
             "  MODELS_DIR        模型保存目录\n"
-            "  OUTPUTS_DIR       输出目录\n"
+            "  OUTPUTS_DIR       评估图表和日志输出目录\n"
+            "  KAGGLEHUB_CACHE   数据集下载缓存目录\n"
             "\n示例:\n"
-            "  python main.py train --dataset-name chest1\n"
-            "  export DATASET_ROOT=/path/to/dataset && python main.py train\n"
-            "  python main.py dataset add chest1 /path/to/chest1\n"
-            "  python main.py dataset list"
+            "  uv run main.py train\n"
+            "  export DATASET_ROOT=/path/to/dataset && uv run main.py train\n"
+            "  uv run main.py download --dataset-root /path/to/dataset\n"
+            "  uv run main.py cache --cache-dir /tmp/cache\n"
+            "  uv run main.py dataset add chest1 /path/to/chest1\n"
+            "  uv run main.py dataset add chest1 /path/to/chest1\n"
+            "  uv run main.py dataset list"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
