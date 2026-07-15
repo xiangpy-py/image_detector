@@ -237,6 +237,13 @@ def run_dataset(args):
 
 
 def main():
+    # 修复 autodl 等环境上 OMP_NUM_THREADS 设为空字符串导致的 libgomp 警告
+    import os
+
+    omp = os.environ.get("OMP_NUM_THREADS", "")
+    if not omp.strip().isdigit():
+        os.environ["OMP_NUM_THREADS"] = "1"
+
     if is_windows():
         import multiprocessing
 
@@ -290,6 +297,12 @@ def main():
         "evaluate",
         help="评估模型并生成图表",
         description="加载训练好的模型，在测试集上评估并输出 ROC、混淆矩阵等图表。",
+    )
+    eval_parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=None,
+        help="指定要评估的模型文件路径（默认自动选最新的 *_best_model.pth）",
     )
     _add_path_args(eval_parser)
 

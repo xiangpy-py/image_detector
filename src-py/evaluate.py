@@ -106,15 +106,49 @@ def plot_training_history(history_path, save_path):
     logger.info(f"训练历史图已保存至 {save_path}")
 
 
-def run_evaluation():
+def _find_latest_model(model_path: Path | None = None) -> Path:
+    """查找要评估的模型文件。
+
+    优先级：
+    1. 显式传入的 model_path
+    2. 带时间戳前缀的 *_best_model.pth（按文件名排序取最新）
+    3. 带时间戳前缀的 *_best_auc_model.pth
+    4. 带时间戳前缀的 *_last_model.pth
+    5. 旧版 best_model.pth（兼容历史文件）
+    """
+    if model_path is not None:
+        if not model_path.exists():
+            raise FileNotFoundError(f"指定的模型文件不存在: {model_path}")
+        return model_path.resolve()
+
+    if not MODELS_DIR.exists():
+        raise FileNotFoundError(f"模型目录不存在: {MODELS_DIR}")
+
+    patterns = ["*_best_model.pth", "*_best_auc_model.pth", "*_last_model.pth"]
+    for pattern in patterns:
+        matches = sorted(MODELS_DIR.glob(pattern), reverse=True)
+        if matches:
+            return matches[0]
+
+    legacy = MODELS_DIR / "best_model.pth"
+    if legacy.exists():
+        return legacy
+
+    raise FileNotFoundError(
+        f"在 {MODELS_DIR} 中未找到任何模型文件，请先运行 `uv run main.py train`。"
+    )
+
+
+def run_evaluation(model_path: Path | None = None):
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_loader, val_loader, test_loader = get_dataloaders()
 
-    model_path = MODELS_DIR / "best_model.pth"
+    resolved_path = _find_latest_model(model_path)
+    logger.info(f"加载模型: {resolved_path}")
     model = build_model(pretrained=False)
-    checkpoint = torch.load(model_path, map_location=device, weights_only=True)
+    checkpoint = torch.load(resolved_path, map_location=device, weights_only=True)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
 
