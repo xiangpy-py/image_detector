@@ -80,16 +80,18 @@ def override_paths(
     outputs_dir: Path | str | None = None,
     app_data_dir: Path | str | None = None,
     dataset_name: str | None = None,
+    dataset_roots: list[Path | str] | None = None,
 ) -> None:
     """在运行时覆盖全局路径配置。
 
     Args:
-        dataset_root: 数据集根目录（直接指定路径）
+        dataset_root: 数据集根目录（直接指定单个路径）
         cache_dir: 缓存目录
         models_dir: 模型保存目录
         outputs_dir: 输出目录
         app_data_dir: 应用数据目录（设置后会自动推导 cache/models/outputs）
         dataset_name: 已注册数据集名称（与 dataset_root 二选一）
+        dataset_roots: 多个数据集根目录列表（优先级最高，会同时设置 DATASET_ROOT 和 DATASET_ROOTS）
     """
     global DATASET_ROOT, DATASET_ROOTS, CACHE_DIR, MODELS_DIR, OUTPUTS_DIR
 
@@ -103,7 +105,11 @@ def override_paths(
         if outputs_dir is None:
             outputs_dir = get_default_outputs_dir()
 
-    if dataset_name is not None:
+    if dataset_roots is not None:
+        # 多数据集模式
+        DATASET_ROOTS = [normalize_path(Path(p)) for p in dataset_roots]
+        DATASET_ROOT = DATASET_ROOTS[0]
+    elif dataset_name is not None:
         from system import get_dataset_path
 
         DATASET_ROOT = normalize_path(get_dataset_path(dataset_name))

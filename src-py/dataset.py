@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -20,6 +22,20 @@ from config import (
     RANDOM_SEED,
     VAL_SIZE,
 )
+
+
+def _get_merged_info():
+    """读取多数据集合并信息文件，若不存在则返回 None。"""
+    info_path = CACHE_DIR / "merged_info.json"
+    if info_path.exists():
+        with open(info_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return None
+
+
+def _is_multi_dataset():
+    """检测是否处于多数据集合并模式。"""
+    return _get_merged_info() is not None and len(_get_merged_info()["datasets"]) > 0
 
 
 def _get_train_transforms():
@@ -83,6 +99,43 @@ class CachedDataset(Dataset):
 
 
 def load_cached_data(split="train"):
+    """从 Rust 预处理生成的 uint8 .npy 缓存加载数据。
+
+    支持两种模式：
+    1. 单数据集模式（兼容旧版）: 直接从 CACHE_DIR 下加载
+    2. 多数据集合并模式: 从 CACHE_DIR 各子目录加载并拼接
+    """
+    merged_info = _get_merged_info()
+
+    if merged_info is not None:
+        # ─── 多数据集合并模式 ───
+        all_images = []
+        all_labels = []
+        for ds in merged_info["datasets"]:
+            sub_cache = Path(ds["cache_subdir"])
+            images_path = sub_cache / f"{split}_images.npy"
+            labels_path = sub_cache / f"{split}_labels.npy"
+            if not images_path.exists() or not labels_path.exists():
+                raise FileNotFoundError(
+                    f"缓存文件不存在: {images_path} 或 {labels_path}，"
+                    "请先运行 Rust 预处理工具生成缓存。"
+                )
+            images = np.load(images_path)
+            labels = np.load(labels_path)
+
+            if images.dtype != np.uint8:
+                raise ValueError(
+                    f"检测到旧版缓存格式 (dtype={images.dtype})，"
+                    "请删除 cache 目录后重新运行缓存生成。"
+                )
+            all_images.append(images)
+            all_labels.append(labels)
+
+        merged_images = np.concatenate(all_images, axis=0)
+        merged_labels = np.concatenate(all_labels, axis=0)
+        return merged_images, merged_labels
+
+    # ─── 单数据集模式（兼容旧版 flat cache）───
     images_path = CACHE_DIR / f"{split}_images.npy"
     labels_path = CACHE_DIR / f"{split}_labels.npy"
     if not images_path.exists() or not labels_path.exists():

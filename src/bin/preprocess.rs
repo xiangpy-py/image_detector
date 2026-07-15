@@ -1,5 +1,7 @@
-use clap::Parser;
 use std::path::PathBuf;
+
+use clap::Parser;
+use rust_preprocessor::preprocess_dataset_impl;
 
 #[derive(Parser, Debug)]
 #[command(about = "将胸部 X 光 JPEG 图像预处理为 .npy 缓存 (uint8, 256x256)")]
@@ -20,7 +22,7 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    match crate::preprocess_dataset_impl(
+    match preprocess_dataset_impl(
         args.root.to_str().unwrap(),
         args.out.to_str().unwrap(),
         args.size,

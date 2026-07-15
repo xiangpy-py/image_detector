@@ -56,6 +56,7 @@ from config import (
     CACHE_SIZE,
     CLASS_NAMES,
     DATASET_ROOT,
+    DATASET_ROOTS,
     DEFAULT_THRESHOLD,
     EARLY_STOP_PATIENCE,
     EPOCHS,
@@ -563,88 +564,136 @@ class PythonCacheWorker(QThread):
     progress_signal = Signal(int, int)
     finished_signal = Signal(bool, str)
 
-    def __init__(self, dataset_root, cache_dir, cache_size, parent=None):
+    def __init__(self, dataset_roots, cache_dir, cache_size, parent=None):
         super().__init__(parent)
-        self.dataset_root = Path(dataset_root)
+        # 支持单个 Path 或列表
+        if isinstance(dataset_roots, (str, Path)):
+            self.dataset_roots = [Path(dataset_roots)]
+        else:
+            self.dataset_roots = [Path(r) for r in dataset_roots]
         self.cache_dir = Path(cache_dir)
         self.cache_size = cache_size
 
     def _log(self, msg: str):
         self.log_signal.emit(msg)
 
+    def _process_one_root(self, root: Path, out_dir: Path, is_multi: bool):
+        """处理单个数据集根目录，返回 (image_count, [image_arrays], [labels])。"""
+        self._log(f"📂 数据集根目录: {root}")
+        self._log(f"💾 输出目录: {out_dir}")
+        self._log(f"📐 图像尺寸: {self.cache_size}")
+
+        transform = transforms.Compose(
+            [
+                transforms.Resize(self.cache_size),
+                transforms.CenterCrop(self.cache_size),
+            ]
+        )
+
+        total = 0
+        for split in ["train", "test"]:
+            split_dir = root / split
+            if not split_dir.exists():
+                continue
+            for cls_name in CLASS_NAMES:
+                cls_dir = split_dir / cls_name
+                if cls_dir.exists():
+                    total += len(list(cls_dir.glob("*.jpeg")))
+                    total += len(list(cls_dir.glob("*.jpg")))
+                    total += len(list(cls_dir.glob("*.png")))
+
+        self._log(f"🗂️  预计处理图像总数: {total}")
+        processed = 0
+        total_saved = 0
+
+        for split in ["train", "test"]:
+            split_dir = root / split
+            if not split_dir.exists():
+                self._log(f"⚠️ 目录不存在，跳过: {split_dir}")
+                continue
+
+            images = []
+            labels = []
+            for cls_name in CLASS_NAMES:
+                cls_dir = split_dir / cls_name
+                if not cls_dir.exists():
+                    continue
+                label = LABEL_MAP[cls_name]
+                files = []
+                for ext in ["*.jpeg", "*.jpg", "*.png"]:
+                    files.extend(cls_dir.glob(ext))
+                for f in sorted(files):
+                    try:
+                        img = Image.open(f).convert("RGB")
+                        img = transform(img)
+                        img_arr = np.array(img)
+                        img_arr = np.transpose(img_arr, (2, 0, 1))
+                        images.append(img_arr)
+                        labels.append(label)
+                        processed += 1
+                        if processed % 100 == 0:
+                            self.progress_signal.emit(processed, total)
+                            self._log(f"  已处理 {processed}/{total} ...")
+                    except Exception as e:
+                        self._log(f"⚠️ 跳过 {f}: {e}")
+
+            if images:
+                images_arr = np.array(images, dtype=np.uint8)
+                labels_arr = np.array(labels, dtype=np.int64)
+                np.save(out_dir / f"{split}_images.npy", images_arr)
+                np.save(out_dir / f"{split}_labels.npy", labels_arr)
+                self._log(f"✅ {split} 缓存已保存: {len(images)} 张图像")
+                total_saved += len(images)
+            else:
+                self._log(f"⚠️ {split} 无图像数据")
+
+        self.progress_signal.emit(processed, total)
+        return total_saved
+
     def run(self):
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-            self._log(f"📂 数据集根目录: {self.dataset_root}")
-            self._log(f"💾 缓存目录: {self.cache_dir}")
-            self._log(f"📐 图像尺寸: {self.cache_size}")
+            is_multi = len(self.dataset_roots) > 1
 
-            transform = transforms.Compose(
-                [
-                    transforms.Resize(self.cache_size),
-                    transforms.CenterCrop(self.cache_size),
-                ]
-            )
+            total_processed = 0
+            merged_info = {"datasets": []}
 
-            total = 0
-            for split in ["train", "test"]:
-                split_dir = self.dataset_root / split
-                if not split_dir.exists():
-                    self._log(f"⚠️ 目录不存在，跳过: {split_dir}")
-                    continue
-                for cls_name in CLASS_NAMES:
-                    cls_dir = split_dir / cls_name
-                    if cls_dir.exists():
-                        total += len(list(cls_dir.glob("*.jpeg")))
-                        total += len(list(cls_dir.glob("*.jpg")))
-                        total += len(list(cls_dir.glob("*.png")))
-
-            self._log(f"🗂️  预计处理图像总数: {total}")
-            processed = 0
-
-            for split in ["train", "test"]:
-                split_dir = self.dataset_root / split
-                if not split_dir.exists():
+            for i, root in enumerate(self.dataset_roots):
+                if not root.exists():
+                    self._log(f"⚠️ 数据集根目录不存在，跳过: {root}")
                     continue
 
-                images = []
-                labels = []
-                for cls_name in CLASS_NAMES:
-                    cls_dir = split_dir / cls_name
-                    if not cls_dir.exists():
-                        continue
-                    label = LABEL_MAP[cls_name]
-                    files = []
-                    for ext in ["*.jpeg", "*.jpg", "*.png"]:
-                        files.extend(cls_dir.glob(ext))
-                    for f in sorted(files):
-                        try:
-                            img = Image.open(f).convert("RGB")
-                            img = transform(img)
-                            img_arr = np.array(img)  # (H, W, 3)
-                            img_arr = np.transpose(img_arr, (2, 0, 1))  # (3, H, W)
-                            images.append(img_arr)
-                            labels.append(label)
-                            processed += 1
-                            if processed % 100 == 0:
-                                self.progress_signal.emit(processed, total)
-                                self._log(f"  已处理 {processed}/{total} ...")
-                        except Exception as e:
-                            self._log(f"⚠️ 跳过 {f}: {e}")
+                base_name = root.name
+                subdir_name = base_name
+                counter = 1
+                while (self.cache_dir / subdir_name).exists():
+                    subdir_name = f"{base_name}_{counter}"
+                    counter += 1
 
-                if images:
-                    images_arr = np.array(images, dtype=np.uint8)
-                    labels_arr = np.array(labels, dtype=np.int64)
-                    np.save(self.cache_dir / f"{split}_images.npy", images_arr)
-                    np.save(self.cache_dir / f"{split}_labels.npy", labels_arr)
-                    self._log(
-                        f"✅ {split} 缓存已保存: {len(images)} 张图像"
-                    )
-                else:
-                    self._log(f"⚠️ {split} 无图像数据")
+                out_dir = self.cache_dir if not is_multi else self.cache_dir / subdir_name
+                out_dir.mkdir(parents=True, exist_ok=True)
 
-            self.progress_signal.emit(processed, total)
-            self.finished_signal.emit(True, f"缓存生成完成！共处理 {processed} 张图像")
+                if is_multi:
+                    self._log(f"[{i + 1}/{len(self.dataset_roots)}] 处理: {root} -> {subdir_name}")
+
+                n = self._process_one_root(root, out_dir, is_multi)
+                total_processed += n
+
+                if is_multi:
+                    merged_info["datasets"].append({
+                        "name": subdir_name,
+                        "root": str(root),
+                        "cache_subdir": str(out_dir),
+                    })
+
+            if is_multi and merged_info["datasets"]:
+                import json
+                info_path = self.cache_dir / "merged_info.json"
+                with open(info_path, "w", encoding="utf-8") as f:
+                    json.dump(merged_info, f, indent=2, ensure_ascii=False)
+                self._log(f"📋 合并信息已保存: merged_info.json")
+
+            self.finished_signal.emit(True, f"缓存生成完成！共处理 {total_processed} 张图像")
 
         except Exception as e:
             err = traceback.format_exc()
@@ -659,9 +708,13 @@ class RustCacheWorker(QThread):
     progress_signal = Signal(int, int)
     finished_signal = Signal(bool, str)
 
-    def __init__(self, dataset_root, cache_dir, cache_size, parent=None):
+    def __init__(self, dataset_roots, cache_dir, cache_size, parent=None):
         super().__init__(parent)
-        self.dataset_root = Path(dataset_root)
+        # 支持单个 Path 或列表
+        if isinstance(dataset_roots, (str, Path)):
+            self.dataset_roots = [Path(dataset_roots)]
+        else:
+            self.dataset_roots = [Path(r) for r in dataset_roots]
         self.cache_dir = Path(cache_dir)
         self.cache_size = cache_size
         self._python_worker = None
@@ -672,16 +725,63 @@ class RustCacheWorker(QThread):
     def run(self):
         try:
             from rust_preprocessor import preprocess_dataset
+
+            is_multi = len(self.dataset_roots) > 1
             self._log("🦀 使用 Rust 加速预处理...")
-            train_count, test_count = preprocess_dataset(
-                str(self.dataset_root), str(self.cache_dir), self.cache_size
+
+            total_train = 0
+            total_test = 0
+            merged_info = {"datasets": []}
+
+            for i, root in enumerate(self.dataset_roots):
+                if not root.exists():
+                    self._log(f"⚠️ 数据集根目录不存在，跳过: {root}")
+                    continue
+
+                # 子缓存目录名
+                base_name = root.name
+                subdir_name = base_name
+                counter = 1
+                while (self.cache_dir / subdir_name).exists():
+                    subdir_name = f"{base_name}_{counter}"
+                    counter += 1
+
+                out_dir = self.cache_dir if not is_multi else self.cache_dir / subdir_name
+                out_dir.mkdir(parents=True, exist_ok=True)
+
+                if is_multi:
+                    self._log(f"[{i + 1}/{len(self.dataset_roots)}] 处理: {root} -> {subdir_name}")
+                else:
+                    self._log(f"📂 数据集根目录: {root}")
+
+                train_count, test_count = preprocess_dataset(
+                    str(root), str(out_dir), self.cache_size
+                )
+                total_train += train_count
+                total_test += test_count
+
+                if is_multi:
+                    merged_info["datasets"].append({
+                        "name": subdir_name,
+                        "root": str(root),
+                        "cache_subdir": str(out_dir),
+                    })
+
+            if is_multi and merged_info["datasets"]:
+                import json
+                info_path = self.cache_dir / "merged_info.json"
+                with open(info_path, "w", encoding="utf-8") as f:
+                    json.dump(merged_info, f, indent=2, ensure_ascii=False)
+                self._log(f"📋 合并信息已保存: merged_info.json")
+
+            self._log(f"✅ Rust 预处理完成: 训练集 {total_train} 张, 测试集 {total_test} 张")
+            self.finished_signal.emit(
+                True, f"Rust 预处理完成: 训练集 {total_train} 张, 测试集 {total_test} 张"
             )
-            self._log(f"✅ Rust 预处理完成: train={train_count}, test={test_count}")
-            self.finished_signal.emit(True, f"Rust 预处理完成: 训练集 {train_count} 张, 测试集 {test_count} 张")
         except ImportError:
             self._log("⚠️ Rust 扩展未安装，将使用 Python 模式生成缓存...")
             self._python_worker = PythonCacheWorker(
-                self.dataset_root, self.cache_dir, self.cache_size
+                self.dataset_roots, self.cache_dir, self.cache_size
             )
             self._python_worker.log_signal.connect(self.log_signal)
             self._python_worker.progress_signal.connect(self.progress_signal)
@@ -692,7 +792,7 @@ class RustCacheWorker(QThread):
             self._log(f"❌ Rust 预处理失败: {e}\n{err}")
             self._log("🔄 尝试使用 Python 模式...")
             self._python_worker = PythonCacheWorker(
-                self.dataset_root, self.cache_dir, self.cache_size
+                self.dataset_roots, self.cache_dir, self.cache_size
             )
             self._python_worker.log_signal.connect(self.log_signal)
             self._python_worker.progress_signal.connect(self.progress_signal)
@@ -1872,10 +1972,18 @@ class PneumoniaGUI(QWidget):
         self._check_dataset()
 
     def run_cache_generation(self):
-        reply = QMessageBox.question(
-            self, "确认",
-            f"生成图像缓存?\n数据集: {DATASET_ROOT}\n缓存目录: {CACHE_DIR}"
-        )
+        num_datasets = len(DATASET_ROOTS)
+        if num_datasets == 1:
+            msg = f"生成图像缓存?\n数据集: {DATASET_ROOT}\n缓存目录: {CACHE_DIR}"
+        else:
+            msg = (
+                f"生成图像缓存?\n"
+                f"数据集数量: {num_datasets}\n"
+                f"缓存目录: {CACHE_DIR}\n\n"
+                f"将处理以下数据集:\n" +
+                "\n".join(f"  • {r}" for r in DATASET_ROOTS)
+            )
+        reply = QMessageBox.question(self, "确认", msg)
         if reply != QMessageBox.Yes:
             return
 
@@ -1886,7 +1994,7 @@ class PneumoniaGUI(QWidget):
         if self.cache_worker is not None:
             self.cache_worker.deleteLater()
 
-        self.cache_worker = RustCacheWorker(DATASET_ROOT, CACHE_DIR, CACHE_SIZE)
+        self.cache_worker = RustCacheWorker(DATASET_ROOTS, CACHE_DIR, CACHE_SIZE)
         self.cache_worker.log_signal.connect(self.dataset_log.append)
         self.cache_worker.progress_signal.connect(self._on_cache_progress)
         self.cache_worker.finished_signal.connect(self._on_cache_finished)
