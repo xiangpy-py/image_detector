@@ -10,15 +10,15 @@ pub struct ImageEntry {
 
 /// 扫描指定 split 下的所有图像。
 ///
-/// 当 `split_name` 为 "train" 时，会同时扫描 "train" 和 "val" 目录；
-/// 其他情况下只扫描 `split_name` 目录。
+/// 当 `split_name` 为 "train" 且 `merge_val` 为 true 时，会同时扫描
+/// "train" 和 "val" 目录（kaggle 数据集兼容行为）；
+/// 否则只扫描 `split_name` 目录。
 /// 每个目录下期望包含 "NORMAL" 和 "PNEUMONIA" 两个子目录。
-pub fn scan_split(root: &Path, split_name: &str) -> Vec<ImageEntry> {
-    let source_dirs: Vec<&str> = if split_name == "train" {
-        vec!["train", "val"]
-    } else {
-        vec![split_name]
-    };
+pub fn scan_split(root: &Path, split_name: &str, merge_val: bool) -> Vec<ImageEntry> {
+    let mut source_dirs: Vec<&str> = vec![split_name];
+    if split_name == "train" && merge_val {
+        source_dirs.push("val");
+    }
 
     let mut entries = Vec::new();
     for dir in &source_dirs {

@@ -13,17 +13,16 @@
 ## 目录
 
 - [这是什么？](#这是什么)
-- [⚡ 快速开始](#-快速开始)
+- [🚀 如何使用](#-如何使用)
 - [🏗️ 架构概览](#️-架构概览)
 - [🔧 CLI 参考](#-cli-参考)
 - [🖥️ 桌面应用程序](#️-桌面应用程序)
 - [🌟 核心特性](#-核心特性)
 - [🛠️ 技术栈](#️-技术栈)
 - [📋 前置条件](#-前置条件)
-- [📖 详细流程](#-详细流程)
 - [📁 项目结构](#-项目结构)
 - [🧪 测试](#-测试)
-- [🚀 开发](#-开发)
+- [💻 开发](#-开发)
 - [📄 许可证](#-许可证)
 
 ---
@@ -43,89 +42,134 @@
 
 ---
 
-## ⚡ 快速开始
+## 🚀 如何使用
 
-### 1. 安装依赖
+本节介绍从安装到推理的完整工作流。
+
+### 步骤 1：安装依赖
 
 需要 [uv](https://docs.astral.sh/uv/)（推荐）或 `pip`。
 
 ```bash
+# 验证 Python 版本
+python --version  # >= 3.12
+
 # 克隆仓库
 git clone https://github.com/yourusername/image-detector.git
 cd image-detector
 
 # uv sync 会自动创建 .venv 并安装所有依赖
-# 无需手动 source .venv/bin/activate —— uv run 会自动处理
 uv sync
 
 # 构建 Rust 扩展（预处理必需）
+# 首次构建可能需要数分钟；后续构建为增量编译。
 uv run maturin develop
-
-# 首次运行 `uv run maturin develop` 较慢属于正常现象：
-# Rust 正在编译 PyO3、image、ndarray、rayon 等重型依赖。
-# 后续构建会利用增量编译，速度明显加快。
 ```
 
 > [!TIP]
 > `uv sync` 会自动在项目根目录创建并管理 `.venv/` 虚拟环境。`uv run` 始终使用该环境中的 Python，所以你不需要手动激活。如果你习惯传统工作流，也可以手动运行 `source .venv/bin/activate`（Linux/macOS）或 `.venv\Scripts\activate`（Windows），然后直接使用 `python`。
 
-### 2. 下载数据集
+### 步骤 2：下载数据集
 
 ```bash
+# 从 KaggleHub 自动下载
 uv run main.py download
 ```
 
-自动从 Kaggle 获取 [Chest X-Ray Images (Pneumonia)](https://www.kaggle.com/datasets/paultimothymooney/chest-xray-pneumonia) 数据集。
+自动获取 [Chest X-Ray Images (Pneumonia)](https://www.kaggle.com/datasets/paultimothymooney/chest-xray-pneumonia) 数据集。你也可以将手动下载的数据放到 `database/` 目录下，或设置 `DATASET_ROOT` 指向本地副本。
 
-### 3. 使用 Rust 预处理
+数据集目录结构：
+
+```
+chest_xray/
+├── train/
+│   ├── NORMAL/         # 1,341 张图像
+│   └── PNEUMONIA/      # 3,875 张图像
+├── test/
+│   ├── NORMAL/         # 234 张图像
+│   └── PNEUMONIA/      # 390 张图像
+└── val/                #（可选，如存在则合并到 train）
+```
+
+### 步骤 3：使用 Rust 预处理
 
 ```bash
 uv run main.py cache
 ```
 
-生成 `cache/train_images.npy` 和 `cache/test_images.npy` —— 原始 JPEG 被缩放为 `(N, 3, 256, 256)` 的 uint8 张量，训练时可即时加载。
+生成以下文件：
+- `cache/train_images.npy` —— `(N, 3, 256, 256)` uint8，合并自 `train/` + `val/`
+- `cache/train_labels.npy` —— `(N,)` int64 标签
+- `cache/test_images.npy` —— `(M, 3, 256, 256)` uint8
+- `cache/test_labels.npy` —— `(M,)` int64 标签
 
 > [!NOTE]
-> Rust 预处理器使用 **rayon** 进行并行 I/O，使用 **Lanczos3** 重采样。损坏的图像会被自动跳过。
+> Rust 预处理器遍历目录树，过滤 `.jpg/.jpeg/.png`，使用 Lanczos3 缩放到 256×256，然后写入连续的 NumPy 数组。损坏的图像会被跳过并发出警告。
 
-### 4. 训练模型
+### 步骤 4：训练模型
 
 ```bash
+# 完整训练（最多 30 轮，早停）
 uv run main.py train
+
+# 从检查点恢复
+uv run main.py train --resume models/20260715_1401_best_model.pth
+
+# 使用指定的已注册数据集训练
+uv run main.py train --dataset-name chest1
 ```
 
 训练包含以下特性：
 - 标签平滑 + 加权 BCE 损失处理类别不平衡
+- `WeightedRandomSampler` 实现均衡 mini-batch
 - 两阶段迁移学习：先冻结 backbone，再解冻并微调
-- Warmup + Cosine 退火 + ReduceLROnPlateau 学习率调度
+- Warmup + Cosine 退火 + `ReduceLROnPlateau` 学习率调度
 - EMA（指数移动平均）稳定推理
 - 梯度裁剪
 - 早停（patience = 10，监控 `val_f1`）
 - CUDA 上的自动混合精度（AMP）
-- 通过 `--resume path/to/checkpoint.pth` 恢复训练
 
-> [!NOTE]
-> `evaluate` 子命令会自动加载 `models/` 目录下时间戳最新的 `*_best_model.pth` 检查点。
+最佳模型以时间戳命名保存到 `models/`，例如：
+- `models/YYYYMMDD_HHMM_best_model.pth` —— 最高 `val_f1`
+- `models/YYYYMMDD_HHMM_best_auc_model.pth` —— 最高 `val_auc`
+- `models/YYYYMMDD_HHMM_last_model.pth` —— 最后一轮检查点
 
-### 5. 评估
+训练历史保存到 `outputs/history.json`。
+
+### 步骤 5：评估与阈值优化
 
 ```bash
 uv run main.py evaluate
 ```
 
-生成：
-- `outputs/roc_curve.png`
-- `outputs/confusion_matrix.png`
-- `outputs/training_history.png`
-- `outputs/metrics.json`
+`evaluate` 子命令会自动加载 `models/` 目录下时间戳最新的 `*_best_model.pth` 检查点，然后：
 
-### 6. 启动 GUI
+1. 在**验证集**上评估，通过网格搜索找到最优分类阈值（以 F1 最大化为目标）。
+2. 使用优化后的阈值在**测试集**上评估。
+3. 生成图表并保存结构化指标报告。
+
+生成文件：
+
+| 文件 | 说明 |
+|------|------|
+| `outputs/roc_curve.png` | ROC 曲线及 AUC 分数 |
+| `outputs/confusion_matrix.png` | 混淆矩阵热力图 |
+| `outputs/training_history.png` | 各轮次的 Loss / F1 / AUC |
+| `outputs/metrics.json` | 准确率、精确率、召回率、F1、AUC |
+| `outputs/threshold.json` | 推理用的最佳阈值 |
+
+### 步骤 6：启动 GUI
 
 ```bash
 uv run main.py gui
 ```
 
-上传胸部 X 光图像，获取即时预测结果和置信度分数。
+GUI 使用步骤：
+1. 点击 **「更改」** 选择数据集根目录（如未配置）。
+2. 点击 **「预处理」** 生成缓存（如缺失）。
+3. 点击 **「选择图像」** 加载胸部 X 光图像。
+4. 点击 **「开始检测」** 运行推理。
+5. 查看结果（**NORMAL** / **PNEUMONIA**）及置信度百分比。
 
 ---
 
@@ -291,138 +335,6 @@ GUI 提供了一个**对放射科医生友好**的单次诊断界面：
 
 ---
 
-## 📖 详细流程
-
-<details>
-<summary><b>点击展开完整的训练和评估工作流</b></summary>
-
-### 步骤 1：环境搭建
-
-```bash
-# 验证 Python 版本
-python --version  # >= 3.12
-
-# 安装 uv（如尚未安装）
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 克隆并进入项目
-git clone <repo-url>
-cd image-detector
-
-# uv sync：如 .venv 不存在则自动创建，并安装 pyproject.toml 中的依赖
-uv sync
-
-# 在 uv 管理的虚拟环境中构建 Rust 扩展
-uv run maturin develop
-# 首次构建可能需要数分钟；后续构建为增量编译。
-```
-
-> [!TIP]
-> 与 `pip` 不同，`uv` 不需要你手动创建虚拟环境或激活它。`uv sync` 会自动处理 `.venv` 的创建，每个 `uv run` 命令都在该环境中运行。
-
-### 步骤 2：获取数据集
-
-项目使用来自 Kaggle 的 [Chest X-Ray Images (Pneumonia)](https://www.kaggle.com/datasets/paultimothymooney/chest-xray-pneumonia) 数据集。
-
-```bash
-# 方式 A：自动下载
-uv run main.py download
-
-# 方式 B：手动下载
-# 将数据集放置到 database/paultimothymooney/chest-xray-pneumonia/versions/2/chest_xray/chest_xray
-# 或设置 DATASET_ROOT 指向本地副本
-```
-
-数据集结构：
-
-```
-chest_xray/
-├── train/
-│   ├── NORMAL/         # 1,341 张图像
-│   └── PNEUMONIA/      # 3,875 张图像
-├── test/
-│   ├── NORMAL/         # 234 张图像
-│   └── PNEUMONIA/      # 390 张图像
-└── val/                #（可选，如存在则合并到 train）
-```
-
-### 步骤 3：Rust 预处理
-
-```bash
-uv run main.py cache
-```
-
-生成以下文件：
-- `cache/train_images.npy` — `(N, 3, 256, 256)` uint8，合并自 `train/` + `val/`
-- `cache/train_labels.npy` — `(N,)` int64 标签
-- `cache/test_images.npy` — `(M, 3, 256, 256)` uint8
-- `cache/test_labels.npy` — `(M,)` int64 标签
-
-> [!NOTE]
-> Rust 预处理器遍历目录树，过滤 `.jpg/.jpeg/.png`，使用 Lanczos3 缩放到 256×256，然后写入连续的 NumPy 数组。损坏的图像会被跳过并发出警告。
-
-### 步骤 4：模型训练
-
-```bash
-# 完整训练（最多 30 轮，早停）
-uv run main.py train
-
-# 从检查点恢复
-uv run main.py train --resume models/20260715_1401_best_model.pth
-
-# 使用指定数据集训练
-uv run main.py train --dataset-name chest1
-```
-
-训练监控指标：
-- `train_loss` — 训练集 BCE 损失
-- `val_loss` / `val_f1` / `val_auc` — 验证集指标
-
-最佳模型以时间戳命名保存到 `models/`，例如：
-- `models/YYYYMMDD_HHMM_best_model.pth` —— 最高 `val_f1`
-- `models/YYYYMMDD_HHMM_best_auc_model.pth` —— 最高 `val_auc`
-- `models/YYYYMMDD_HHMM_last_model.pth` —— 最后一轮检查点
-
-训练历史保存到 `outputs/history.json`。
-
-### 步骤 5：评估与阈值优化
-
-```bash
-uv run main.py evaluate
-```
-
-评估流水线：
-1. 加载最新的 `*_best_model.pth` 检查点
-2. 在**验证集**上评估以找到最佳分类阈值（网格搜索最大化 F1）
-3. 使用优化后的阈值在**测试集**上评估
-4. 生成图表并保存指标报告
-
-输出文件：
-| 文件 | 说明 |
-|------|------|
-| `outputs/roc_curve.png` | ROC 曲线及 AUC 分数 |
-| `outputs/confusion_matrix.png` | 混淆矩阵热力图 |
-| `outputs/training_history.png` | 各轮次的 Loss / F1 / AUC |
-| `outputs/metrics.json` | 结构化的准确率、精确率、召回率、F1、AUC |
-| `outputs/threshold.json` | 推理用的最佳阈值 |
-
-### 步骤 6：GUI 推理
-
-```bash
-uv run main.py gui
-```
-
-使用步骤：
-1. 点击 **「更改」** 选择数据集根目录（如未配置）
-2. 点击 **「预处理」** 生成缓存（如缺失）
-3. 点击 **「选择图像」** 加载胸部 X 光图像
-4. 点击 **「开始检测」** 运行推理
-5. 查看结果（NORMAL / PNEUMONIA）及置信度百分比
-
-</details>
-
----
-
 ## 📁 项目结构
 
 ```
@@ -506,7 +418,7 @@ uv run pytest -v
 
 ---
 
-## 🚀 开发
+## 💻 开发
 
 ### 构建 Rust 扩展
 

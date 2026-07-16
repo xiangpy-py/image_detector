@@ -107,6 +107,16 @@ def load_cached_data(split="train"):
     """
     merged_info = _get_merged_info()
 
+    def _validate(images: np.ndarray, labels: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if images.dtype != np.uint8:
+            raise ValueError(
+                f"检测到旧版缓存格式 (dtype={images.dtype})，"
+                "请删除 cache 目录后重新运行 `uv run python src-py/main.py cache` 生成新缓存。"
+            )
+        if labels.dtype != np.int64:
+            labels = labels.astype(np.int64)
+        return images, labels
+
     if merged_info is not None:
         # ─── 多数据集合并模式 ───
         all_images = []
@@ -120,14 +130,7 @@ def load_cached_data(split="train"):
                     f"缓存文件不存在: {images_path} 或 {labels_path}，"
                     "请先运行 Rust 预处理工具生成缓存。"
                 )
-            images = np.load(images_path)
-            labels = np.load(labels_path)
-
-            if images.dtype != np.uint8:
-                raise ValueError(
-                    f"检测到旧版缓存格式 (dtype={images.dtype})，"
-                    "请删除 cache 目录后重新运行缓存生成。"
-                )
+            images, labels = _validate(np.load(images_path), np.load(labels_path))
             all_images.append(images)
             all_labels.append(labels)
 
@@ -143,17 +146,7 @@ def load_cached_data(split="train"):
             f"缓存文件不存在: {images_path} 或 {labels_path}，"
             "请先运行 Rust 预处理工具生成缓存。"
         )
-    images = np.load(images_path)
-    labels = np.load(labels_path)
-
-    # 格式校验：若缓存仍是旧版 float32 (已归一化) 则给出友好提示
-    if images.dtype != np.uint8:
-        raise ValueError(
-            f"检测到旧版缓存格式 (dtype={images.dtype})，"
-            "请删除 cache 目录后重新运行 `uv run python src-py/main.py cache` 生成新缓存。"
-        )
-
-    return images, labels
+    return _validate(np.load(images_path), np.load(labels_path))
 
 
 def _build_dataloader(dataset, shuffle=False, batch_size=None, sampler=None):

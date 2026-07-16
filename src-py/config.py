@@ -66,10 +66,12 @@ USE_EMA = True
 EMA_DECAY = 0.999
 
 # ─── 损失函数 ───
+# LOSS_TYPE 可选: "bce" | "focal"
+# - "bce" 使用 LabelSmoothingBCEWithLogitsLoss，启用 pos_weight + 标签平滑
+# - "focal" 使用 FocalLoss，启用 alpha + gamma 调节难例
 LOSS_TYPE = "bce"
 FOCAL_ALPHA = 0.25
 FOCAL_GAMMA = 2.0
-LOSS_TYPE = "bce"
 LABEL_SMOOTHING = 0.05
 
 

@@ -13,17 +13,16 @@
 ## Table of Contents
 
 - [What is this?](#what-is-this)
-- [⚡ Get Started](#-get-started)
-- [🏗️ Architecture Overview](#️-architecture-overview)
+- [🚀 How to Use](#-how-to-use)
+- [🏗️ Architecture Overview](#%EF%B8%8F-architecture-overview)
 - [🔧 CLI Reference](#-cli-reference)
-- [🖥️ Desktop Application](#️-desktop-application)
+- [🖥️ Desktop Application](#%EF%B8%8F-desktop-application)
 - [🌟 Core Features](#-core-features)
-- [🛠️ Tech Stack](#️-tech-stack)
+- [🛠️ Tech Stack](#%EF%B8%8F-tech-stack)
 - [📋 Prerequisites](#-prerequisites)
-- [📖 Detailed Process](#-detailed-process)
 - [📁 Project Structure](#-project-structure)
 - [🧪 Testing](#-testing)
-- [🚀 Development](#-development)
+- [💻 Development](#-development)
 - [📄 License](#-license)
 
 ---
@@ -43,89 +42,134 @@ The system handles the real-world challenge of **class imbalance** (1,341 NORMAL
 
 ---
 
-## ⚡ Get Started
+## 🚀 How to Use
 
-### 1. Install dependencies
+This section walks through the full workflow from installation to inference.
+
+### Step 1: Install dependencies
 
 Requires [uv](https://docs.astral.sh/uv/) (recommended) or `pip`.
 
 ```bash
+# Verify Python version
+python --version  # >= 3.12
+
 # Clone the repository
 git clone https://github.com/yourusername/image-detector.git
 cd image-detector
 
-# uv sync automatically creates .venv and installs all dependencies
-# No manual "source .venv/bin/activate" needed — uv run handles it
+# uv sync creates .venv and installs all dependencies automatically
 uv sync
 
 # Build the Rust extension (required for preprocessing)
+# First build may take several minutes; subsequent builds are incremental.
 uv run maturin develop
-
-# If `uv run maturin develop` is slow on first run, this is normal:
-# Rust is compiling PyO3, image, ndarray, rayon and other heavy crates.
-# Subsequent builds use incremental compilation and are much faster.
 ```
 
 > [!TIP]
 > `uv sync` creates and manages a virtual environment at `.venv/` automatically. `uv run` always uses this environment, so you never need to manually activate it. If you prefer the traditional workflow, you can still run `source .venv/bin/activate` (Linux/macOS) or `.venv\Scripts\activate` (Windows) and use `python` directly.
 
-### 2. Download the dataset
+### Step 2: Download the dataset
 
 ```bash
+# Automatic download from KaggleHub
 uv run main.py download
 ```
 
-This fetches the [Chest X-Ray Images (Pneumonia)](https://www.kaggle.com/datasets/paultimothymooney/chest-xray-pneumonia) dataset from Kaggle automatically.
+This fetches the [Chest X-Ray Images (Pneumonia)](https://www.kaggle.com/datasets/paultimothymooney/chest-xray-pneumonia) dataset. You can also place a manual copy under `database/` or set `DATASET_ROOT` to point to your local copy.
 
-### 3. Preprocess with Rust
+Expected dataset structure:
+
+```
+chest_xray/
+├── train/
+│   ├── NORMAL/         # 1,341 images
+│   └── PNEUMONIA/      # 3,875 images
+├── test/
+│   ├── NORMAL/         # 234 images
+│   └── PNEUMONIA/      # 390 images
+└── val/                # (optional, merged into train if present)
+```
+
+### Step 3: Preprocess with Rust
 
 ```bash
 uv run main.py cache
 ```
 
-Generates `cache/train_images.npy` and `cache/test_images.npy` — raw JPEGs resized to `(N, 3, 256, 256)` uint8 tensors, ready for instant loading during training.
+Generates:
+- `cache/train_images.npy` — `(N, 3, 256, 256)` uint8, merged from `train/` + `val/`
+- `cache/train_labels.npy` — `(N,)` int64 labels
+- `cache/test_images.npy` — `(M, 3, 256, 256)` uint8
+- `cache/test_labels.npy` — `(M,)` int64 labels
 
 > [!NOTE]
-> The Rust preprocessor uses **rayon** for parallel I/O and **Lanczos3** resampling. It skips corrupted images automatically.
+> The Rust preprocessor uses **rayon** for parallel I/O and **Lanczos3** resampling. It walks the directory tree, filters `.jpg/.jpeg/.png`, resizes to 256×256, and writes contiguous NumPy arrays. Corrupted images are skipped automatically.
 
-### 4. Train the model
+### Step 4: Train the model
 
 ```bash
+# Full training (30 epochs max, early stopping)
 uv run main.py train
+
+# Resume from checkpoint
+uv run main.py train --resume models/20260715_1401_best_model.pth
+
+# Train with a specific registered dataset
+uv run main.py train --dataset-name chest1
 ```
 
 Training includes:
 - Label smoothing + weighted BCE loss for class imbalance
+- `WeightedRandomSampler` for balanced mini-batches
 - Two-stage transfer learning: freeze backbone, then unfreeze and fine-tune
-- Warmup + Cosine annealing + ReduceLROnPlateau schedulers
+- Warmup + Cosine annealing + `ReduceLROnPlateau` schedulers
 - EMA (Exponential Moving Average) for stable inference
 - Gradient clipping
 - Early stopping (patience = 10, monitors `val_f1`)
 - Automatic Mixed Precision (AMP) on CUDA
-- Checkpoint resume with `--resume path/to/checkpoint.pth`
 
-> [!NOTE]
-> The `evaluate` command automatically loads the latest `*_best_model.pth` checkpoint in `models/`.
+Best models are saved with timestamps to `models/`, e.g.:
+- `models/YYYYMMDD_HHMM_best_model.pth` — highest `val_f1`
+- `models/YYYYMMDD_HHMM_best_auc_model.pth` — highest `val_auc`
+- `models/YYYYMMDD_HHMM_last_model.pth` — final epoch checkpoint
 
-### 5. Evaluate
+Training history is saved to `outputs/history.json`.
+
+### Step 5: Evaluate and tune threshold
 
 ```bash
 uv run main.py evaluate
 ```
 
-Generates:
-- `outputs/roc_curve.png`
-- `outputs/confusion_matrix.png`
-- `outputs/training_history.png`
-- `outputs/metrics.json`
+The `evaluate` command automatically loads the latest `*_best_model.pth` checkpoint in `models/` and then:
 
-### 6. Launch the GUI
+1. Evaluates on the **validation set** to find the optimal classification threshold (grid search maximizing F1).
+2. Evaluates on the **test set** using the optimized threshold.
+3. Generates plots and a structured metrics report.
+
+Generated outputs:
+
+| File | Description |
+|------|-------------|
+| `outputs/roc_curve.png` | ROC curve with AUC score |
+| `outputs/confusion_matrix.png` | Confusion matrix heatmap |
+| `outputs/training_history.png` | Loss / F1 / AUC over epochs |
+| `outputs/metrics.json` | Accuracy, precision, recall, F1, AUC |
+| `outputs/threshold.json` | Optimal threshold for inference |
+
+### Step 6: Launch the GUI
 
 ```bash
 uv run main.py gui
 ```
 
-Upload a chest X-ray image and get an instant prediction with confidence score.
+GUI usage:
+1. Click **「更改」** to select your dataset root (if not already configured).
+2. Click **「预处理」** to generate caches (if missing).
+3. Click **「选择图像」** to load a chest X-ray image.
+4. Click **「开始检测」** to run inference.
+5. View the result (**NORMAL** / **PNEUMONIA**) with a confidence percentage.
 
 ---
 
@@ -291,138 +335,6 @@ The GUI provides a **radiologist-friendly** interface for one-off diagnosis:
 
 ---
 
-## 📖 Detailed Process
-
-<details>
-<summary><b>Click to expand the full training and evaluation workflow</b></summary>
-
-### STEP 1: Environment setup
-
-```bash
-# Verify Python version
-python --version  # >= 3.12
-
-# Install uv (if not already installed)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Clone and enter the project
-git clone <repo-url>
-cd image-detector
-
-# uv sync: creates .venv (if missing) + installs dependencies from pyproject.toml
-uv sync
-
-# Build Rust extension in the managed environment
-uv run maturin develop
-# First build may take several minutes; subsequent builds are incremental.
-```
-
-> [!TIP]
-> Unlike `pip`, `uv` does not require you to manually create a virtual environment or activate it. `uv sync` handles `.venv` creation automatically, and every `uv run` command runs inside that environment.
-
-### STEP 2: Dataset acquisition
-
-The project uses the [Chest X-Ray Images (Pneumonia)](https://www.kaggle.com/datasets/paultimothymooney/chest-xray-pneumonia) dataset from Kaggle.
-
-```bash
-# Option A: Automatic download
-uv run main.py download
-
-# Option B: Manual download
-# Place the dataset at database/paultimothymooney/chest-xray-pneumonia/versions/2/chest_xray/chest_xray
-# Or set DATASET_ROOT to point to your local copy
-```
-
-Dataset structure:
-
-```
-chest_xray/
-├── train/
-│   ├── NORMAL/         # 1,341 images
-│   └── PNEUMONIA/      # 3,875 images
-├── test/
-│   ├── NORMAL/         # 234 images
-│   └── PNEUMONIA/      # 390 images
-└── val/                # (optional, merged into train if present)
-```
-
-### STEP 3: Rust preprocessing
-
-```bash
-uv run main.py cache
-```
-
-This generates:
-- `cache/train_images.npy` — `(N, 3, 256, 256)` uint8, merged from `train/` + `val/`
-- `cache/train_labels.npy` — `(N,)` int64 labels
-- `cache/test_images.npy` — `(M, 3, 256, 256)` uint8
-- `cache/test_labels.npy` — `(M,)` int64 labels
-
-> [!NOTE]
-> The Rust preprocessor walks the directory tree, filters `.jpg/.jpeg/.png`, resizes to 256×256 with Lanczos3, and writes contiguous NumPy arrays. Corrupted images are skipped with a warning.
-
-### STEP 4: Model training
-
-```bash
-# Full training (30 epochs max, early stopping)
-uv run main.py train
-
-# Resume from checkpoint
-uv run main.py train --resume models/20260715_1401_best_model.pth
-
-# Train with a specific dataset
-uv run main.py train --dataset-name chest1
-```
-
-Training monitors:
-- `train_loss` — training set BCE loss
-- `val_loss` / `val_f1` / `val_auc` — validation metrics
-
-Best models are saved with timestamps to `models/`, e.g.:
-- `models/YYYYMMDD_HHMM_best_model.pth` — highest `val_f1`
-- `models/YYYYMMDD_HHMM_best_auc_model.pth` — highest `val_auc`
-- `models/YYYYMMDD_HHMM_last_model.pth` — final epoch checkpoint
-
-Training history is saved to `outputs/history.json`.
-
-### STEP 5: Evaluation and threshold optimization
-
-```bash
-uv run main.py evaluate
-```
-
-Evaluation pipeline:
-1. Load the latest `*_best_model.pth` checkpoint
-2. Evaluate on **validation set** to find the optimal classification threshold (grid search maximizing F1)
-3. Evaluate on **test set** using the optimized threshold
-4. Generate plots and save metrics report
-
-Outputs:
-| File | Description |
-|------|-------------|
-| `outputs/roc_curve.png` | ROC curve with AUC score |
-| `outputs/confusion_matrix.png` | Confusion matrix heatmap |
-| `outputs/training_history.png` | Loss / F1 / AUC over epochs |
-| `outputs/metrics.json` | Structured accuracy, precision, recall, F1, AUC |
-| `outputs/threshold.json` | Optimal threshold for inference |
-
-### STEP 6: GUI inference
-
-```bash
-uv run main.py gui
-```
-
-Usage:
-1. Click **「更改」** to select your dataset root (if not already configured)
-2. Click **「预处理」** to generate caches (if missing)
-3. Click **「选择图像」** to load a chest X-ray image
-4. Click **「开始检测」** to run inference
-5. View the result (NORMAL / PNEUMONIA) with confidence percentage
-
-</details>
-
----
-
 ## 📁 Project Structure
 
 ```
@@ -506,7 +418,7 @@ Coverage includes:
 
 ---
 
-## 🚀 Development
+## 💻 Development
 
 ### Building the Rust extension
 

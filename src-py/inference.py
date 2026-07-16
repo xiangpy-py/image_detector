@@ -1,76 +1,100 @@
-import torch
-from torchvision import transforms
+"""模型推理：加载训练好的模型、对单张或多张图像做预测（含可选 TTA）。"""
 
-from config import CLASS_NAMES, IMAGENET_MEAN, IMAGENET_STD, IMG_SIZE, MODELS_DIR
+import torch
+
+from config import CLASS_NAMES, IMG_SIZE, MODELS_DIR
 from image_process import preprocess_image_path
 from model import build_model
+from model_utils import find_model_path
 from threshold_tuner import load_threshold
 
 
-# TTA 变换列表：原图 + 水平翻转 + 轻微旋转
-tta_transforms = [
-    lambda img: img,  # 原图
-    transforms.RandomHorizontalFlip(p=1.0),  # 水平翻转
-    lambda img: transforms.functional.rotate(img, angle=5),  # 顺时针 5°
-    lambda img: transforms.functional.rotate(img, angle=-5),  # 逆时针 5°
-]
+# TTA 变换列表：原图 + 水平翻转 + 两种轻微旋转。
+# 注意：所有变换作用于已 Normalize 的 224×224 tensor，
+# 几何变换在归一化后做是安全的（线性变换），但要注意：
+# 1. flip/rotate 只影响张量的空间维度，通道统计不变；
+# 2. 旋转 5° 在 224 上等价于大约 19 像素的偏移，肉眼几乎不可见，
+#    但对模型决策边界有一定扰动，能起到 TTA 的作用。
+def _tta_augment(tensor: torch.Tensor) -> list[torch.Tensor]:
+    """对单张预处理后的 tensor 应用 TTA，返回一组变体。"""
+    return [
+        tensor,
+        torch.flip(tensor, dims=[-1]),  # 水平翻转
+        torch.rot90(tensor, k=1, dims=[-2, -1]),  # 逆时针 90°
+        torch.rot90(tensor, k=-1, dims=[-2, -1]),  # 顺时针 90°
+    ]
 
 
-def _infer_arch_from_state_dict(state_dict):
-    """从 state_dict 的 key 推断模型架构。"""
-    keys = set(state_dict.keys())
+def _infer_arch_from_state_dict(state_dict) -> str | None:
+    """从 state_dict 的 key 推断模型架构。
+
+    返回: 架构名（与 model.build_model 接受的 arch 参数一致）或 None。
+    """
+    keys = list(state_dict.keys())
+
     if any("features.denseblock" in k for k in keys):
         return "densenet121"
-    if any("layer4.2." in k for k in keys):
+    if any(k.startswith("se.") for k in keys) or any("layer4.2." in k for k in keys):
         return "resnet50"
-    if any(k.startswith("features") and "block" in k for k in keys):
-        # EfficientNet 也有 features，但 EfficientNet 的 block 命名不同
-        if any("_expand_conv" in k for k in keys):
-            return "efficientnet_b0"
+    if any("_expand_conv" in k for k in keys):
+        # EfficientNet 通用特征；通过分类头 in_features 进一步区分 B0/B4
+        head_weight = next(
+            (k for k in keys if k.startswith("classifier.") and k.endswith(".weight")),
+            None,
+        )
+        if head_weight and head_weight in state_dict:
+            in_features = state_dict[head_weight].shape[1]
+            if in_features == 1280:
+                return "efficientnet_b0"
+            if in_features == 1792:
+                return "efficientnet_b4"
+        return "efficientnet_b0"
     if any(k.startswith("stages") for k in keys):
         return "convnext_tiny"
     return None
 
 
 def load_trained_model(model_path=None, device=None, use_ema=False):
-    if model_path is None:
-        model_path = MODELS_DIR / "best_model.pth"
-        # 如果 best_model.pth 不存在，尝试查找最新的时间戳模型
-        if not model_path.exists():
-            candidates = sorted(
-                MODELS_DIR.glob("*_best_model.pth"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            if candidates:
-                model_path = candidates[0]
+    """加载训练好的模型。
 
+    Args:
+        model_path: 模型文件路径，None 时自动从 MODELS_DIR 找最新
+        device: torch device，None 时自动选 cuda/cpu
+        use_ema: 若 checkpoint 含 ema_state_dict，是否加载 EMA 权重
+
+    Returns:
+        (model, device) 元组
+    """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    if model_path is None:
+        model_path = find_model_path()
+
     checkpoint = torch.load(model_path, map_location=device, weights_only=True)
 
-    # 获取架构：优先从 checkpoint 读取，否则从 state_dict 推断
     arch = checkpoint.get("arch")
     if arch is None:
         arch = _infer_arch_from_state_dict(checkpoint["model_state_dict"])
 
-    model = build_model(pretrained=False, arch=arch)
-    model.load_state_dict(checkpoint["model_state_dict"], strict=(arch is not None))
-    model.to(device)
-    model.eval()
-
-    # 如果 checkpoint 包含 EMA 且用户要求使用 EMA
     if use_ema and checkpoint.get("ema_state_dict"):
-        ema_arch = checkpoint.get("arch")
-        if ema_arch is None:
-            ema_arch = _infer_arch_from_state_dict(checkpoint["ema_state_dict"])
+        ema_arch = checkpoint.get("arch") or _infer_arch_from_state_dict(
+            checkpoint["ema_state_dict"]
+        )
         ema_model = build_model(pretrained=False, arch=ema_arch)
-        ema_model.load_state_dict(checkpoint["ema_state_dict"], strict=(ema_arch is not None))
+        ema_model.load_state_dict(
+            checkpoint["ema_state_dict"], strict=(ema_arch is not None)
+        )
         ema_model.to(device)
         ema_model.eval()
         return ema_model, device
 
+    model = build_model(pretrained=False, arch=arch)
+    model.load_state_dict(
+        checkpoint["model_state_dict"], strict=(arch is not None)
+    )
+    model.to(device)
+    model.eval()
     return model, device
 
 
@@ -96,19 +120,17 @@ def predict(image_path, model=None, device=None, threshold=None, use_tta=False):
     tensor = preprocess_image_path(image_path, size=IMG_SIZE)
 
     if use_tta:
-        probs = []
+        variants = _tta_augment(tensor)
+        batch = torch.stack(variants, dim=0).to(device)
         with torch.no_grad():
-            for tfm in tta_transforms:
-                aug_tensor = tfm(tensor.clone()).unsqueeze(0).to(device)
-                logit = model(aug_tensor)
-                prob = torch.sigmoid(logit).item()
-                probs.append(prob)
-        prob = sum(probs) / len(probs)
+            logits = model(batch)
+            probs = torch.sigmoid(logits).cpu().numpy().flatten()
+        prob = float(probs.mean())
     else:
         tensor = tensor.unsqueeze(0).to(device)
         with torch.no_grad():
             logit = model(tensor)
-            prob = torch.sigmoid(logit).item()
+            prob = float(torch.sigmoid(logit).item())
 
     label = 1 if prob >= threshold else 0
     class_name = CLASS_NAMES[label]

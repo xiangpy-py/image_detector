@@ -18,6 +18,13 @@ struct Args {
 
     #[arg(long, default_value_t = 256)]
     size: u32,
+
+    #[arg(
+        long,
+        default_value_t = true,
+        help = "将 kaggle val 目录并入 train（kaggle 兼容）"
+    )]
+    merge_val: bool,
 }
 
 fn main() {
@@ -26,6 +33,7 @@ fn main() {
         args.root.to_str().unwrap(),
         args.out.to_str().unwrap(),
         args.size,
+        args.merge_val,
     ) {
         Ok((train_count, test_count)) => {
             println!("处理完成: train={}, test={}", train_count, test_count);

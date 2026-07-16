@@ -11,6 +11,7 @@ from config import (
     CACHE_SIZE,
     DATASET_ROOT,
     DATASET_ROOTS,
+    EPOCHS,
     override_paths,
 )
 from logger_config import setup_logger
@@ -82,14 +83,24 @@ def run_train(args):
     _apply_path_args(args)
     from train import train
 
-    train(resume_from=args.resume)
+    overrides = {}
+    if args.epochs is not None:
+        overrides["epochs"] = args.epochs
+    if args.lr is not None:
+        overrides["lr"] = args.lr
+    if args.weight_decay is not None:
+        overrides["weight_decay"] = args.weight_decay
+    if args.patience is not None:
+        overrides["patience"] = args.patience
+
+    train(resume_from=args.resume, overrides=overrides or None)
 
 
 def run_evaluate(args):
     _apply_path_args(args)
     from evaluate import run_evaluation
 
-    run_evaluation()
+    run_evaluation(model_path=args.model_path, use_ema=not args.no_ema)
 
 
 def run_gui(args):
@@ -145,6 +156,17 @@ def run_cache(args):
             counter += 1
 
         sub_cache = CACHE_DIR / subdir_name
+
+        # 如果目标子缓存目录已存在且非空，且没有 --force，拒绝覆盖
+        if sub_cache.exists() and any(sub_cache.iterdir()):
+            if not args.force:
+                logger.error(
+                    f"目标缓存目录已存在且非空: {sub_cache}。"
+                    "如需覆盖请加 --force，或先删除该目录。"
+                )
+                continue
+            logger.warning(f"将覆盖已有缓存目录: {sub_cache}")
+
         sub_cache.mkdir(parents=True, exist_ok=True)
 
         if len(datasets) > 1:
@@ -157,7 +179,7 @@ def run_cache(args):
         # Rust 预处理 -> 直接写到 CACHE_DIR 下（兼容单数据集时 flat cache）
         out_dir = CACHE_DIR if len(datasets) == 1 else sub_cache
         train_count, test_count = rust_preprocess(
-            str(root), str(out_dir), CACHE_SIZE
+            str(root), str(out_dir), CACHE_SIZE, True
         )
         total_train += train_count
         total_test += test_count
@@ -291,6 +313,30 @@ def main():
         default=None,
         help="从指定 checkpoint (.pth) 恢复训练",
     )
+    train_parser.add_argument(
+        "--epochs",
+        type=int,
+        default=None,
+        help=f"训练轮数（默认读取 config.py 的 EPOCHS={EPOCHS}）",
+    )
+    train_parser.add_argument(
+        "--lr",
+        type=float,
+        default=None,
+        help=f"学习率（默认读取 config.py 的 LEARNING_RATE）",
+    )
+    train_parser.add_argument(
+        "--weight-decay",
+        type=float,
+        default=None,
+        help="权重衰减系数（覆盖 config.py 的 WEIGHT_DECAY）",
+    )
+    train_parser.add_argument(
+        "--patience",
+        type=int,
+        default=None,
+        help="早停 patience（覆盖 config.py 的 EARLY_STOP_PATIENCE）",
+    )
     _add_path_args(train_parser)
 
     eval_parser = subparsers.add_parser(
@@ -303,6 +349,11 @@ def main():
         type=Path,
         default=None,
         help="指定要评估的模型文件路径（默认自动选最新的 *_best_model.pth）",
+    )
+    eval_parser.add_argument(
+        "--no-ema",
+        action="store_true",
+        help="不使用 EMA 权重评估（默认会用，与训练时选 best 的口径一致）",
     )
     _add_path_args(eval_parser)
 
@@ -317,6 +368,11 @@ def main():
         "cache",
         help="生成图像缓存",
         description="使用 Rust 扩展预处理图像并生成 uint8 .npy 缓存（需先安装 Rust 扩展）。",
+    )
+    cache_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="覆盖已存在的缓存目录（默认拒绝覆盖）",
     )
     _add_path_args(cache_parser)
 

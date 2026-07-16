@@ -1,3 +1,5 @@
+"""模型评估：加载训练好的模型，在验证/测试集上跑指标并输出图表。"""
+
 import json
 from pathlib import Path
 
@@ -8,18 +10,17 @@ import torch
 from loguru import logger
 from sklearn.metrics import confusion_matrix, roc_auc_score, roc_curve
 
-from config import CLASS_NAMES, MODELS_DIR, OUTPUTS_DIR
+from config import CLASS_NAMES, OUTPUTS_DIR
 from dataset import get_dataloaders, load_cached_data
 from logger_config import setup_logger
-from model import build_model
-from threshold_tuner import find_best_threshold, save_threshold
 from metrics import evaluate_model, get_loss_function, get_pos_weight
+from model import build_model
+from model_utils import find_model_path
+from threshold_tuner import find_best_threshold, save_threshold
 
 
-def evaluate_split(model, dataloader, device, criterion, split_name, threshold=0.5):
-    metrics, labels, probs = evaluate_model(model, dataloader, device, criterion)
-
-    preds = (np.array(probs) >= threshold).astype(int)
+def _log_split_metrics(split_name: str, metrics: dict, threshold: float) -> None:
+    """统一打印某一 split 的指标。"""
     logger.info(
         f"[{split_name}] "
         f"Accuracy={metrics['accuracy']:.4f} | "
@@ -29,7 +30,6 @@ def evaluate_split(model, dataloader, device, criterion, split_name, threshold=0
         f"AUC={metrics['auc']:.4f} | "
         f"Threshold={threshold:.4f}"
     )
-    return metrics, labels, probs
 
 
 def plot_roc(labels, probs, save_path):
@@ -106,67 +106,53 @@ def plot_training_history(history_path, save_path):
     logger.info(f"训练历史图已保存至 {save_path}")
 
 
-def _find_latest_model(model_path: Path | None = None) -> Path:
-    """查找要评估的模型文件。
+def run_evaluation(model_path: Path | None = None, use_ema: bool = True):
+    """在 val + test 上评估模型。
 
-    优先级：
-    1. 显式传入的 model_path
-    2. 带时间戳前缀的 *_best_model.pth（按文件名排序取最新）
-    3. 带时间戳前缀的 *_best_auc_model.pth
-    4. 带时间戳前缀的 *_last_model.pth
-    5. 旧版 best_model.pth（兼容历史文件）
+    评估口径：
+    - val: 默认阈值 0.5 算指标，同时扫描最优阈值（用于 test）
+    - test: 用 val 上扫出的最优阈值算指标
+    - 若 checkpoint 含 ema_state_dict 且 use_ema=True，优先评估 EMA 权重
+      （与 train.py 训练时选 best 的口径保持一致）
     """
-    if model_path is not None:
-        if not model_path.exists():
-            raise FileNotFoundError(f"指定的模型文件不存在: {model_path}")
-        return model_path.resolve()
-
-    if not MODELS_DIR.exists():
-        raise FileNotFoundError(f"模型目录不存在: {MODELS_DIR}")
-
-    patterns = ["*_best_model.pth", "*_best_auc_model.pth", "*_last_model.pth"]
-    for pattern in patterns:
-        matches = sorted(MODELS_DIR.glob(pattern), reverse=True)
-        if matches:
-            return matches[0]
-
-    legacy = MODELS_DIR / "best_model.pth"
-    if legacy.exists():
-        return legacy
-
-    raise FileNotFoundError(
-        f"在 {MODELS_DIR} 中未找到任何模型文件，请先运行 `uv run main.py train`。"
-    )
-
-
-def run_evaluation(model_path: Path | None = None):
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_loader, val_loader, test_loader = get_dataloaders()
 
-    resolved_path = _find_latest_model(model_path)
+    resolved_path = find_model_path(model_path)
     logger.info(f"加载模型: {resolved_path}")
     model = build_model(pretrained=False)
     checkpoint = torch.load(resolved_path, map_location=device, weights_only=True)
-    model.load_state_dict(checkpoint["model_state_dict"])
+
+    if use_ema and checkpoint.get("ema_state_dict"):
+        logger.info("检测到 EMA 权重，使用 EMA 模型评估（与训练时 best 选取口径一致）")
+        model.load_state_dict(checkpoint["ema_state_dict"])
+    else:
+        model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
 
     train_images, train_labels = load_cached_data("train")
     pos_weight = get_pos_weight(train_labels, device)
     criterion = get_loss_function(device, pos_weight=pos_weight)
 
-    val_metrics, val_labels, val_probs = evaluate_split(
-        model, val_loader, device, criterion, "Val"
+    # ── 验证集：固定阈值 0.5 算指标 + 扫描最优阈值 ──
+    val_metrics, val_labels, val_probs = evaluate_model(
+        model, val_loader, device, criterion
     )
+    _log_split_metrics("Val", val_metrics, threshold=val_metrics["threshold"])
 
     best_threshold, best_f1 = find_best_threshold(val_labels, val_probs, metric="f1")
     threshold_path = save_threshold(best_threshold)
-    logger.info(f"验证集最优阈值: {best_threshold:.4f} (F1={best_f1:.4f})，已保存至 {threshold_path}")
-
-    test_metrics, test_labels, test_probs = evaluate_split(
-        model, test_loader, device, criterion, "Test", threshold=best_threshold
+    logger.info(
+        f"验证集最优阈值: {best_threshold:.4f} (F1={best_f1:.4f})，已保存至 {threshold_path}"
     )
+
+    # ── 测试集：用最优阈值重算 ──
+    test_metrics, test_labels, test_probs = evaluate_model(
+        model, test_loader, device, criterion, threshold=best_threshold
+    )
+    _log_split_metrics("Test", test_metrics, threshold=best_threshold)
 
     plot_roc(test_labels, test_probs, OUTPUTS_DIR / "roc_curve.png")
     plot_confusion_matrix(

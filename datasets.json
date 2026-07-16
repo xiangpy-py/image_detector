@@ -1,9 +1,0 @@
-{
-  "datasets": {
-    "chest-xray-pneumonia": {
-      "path": "/home/xiangpy/Project/image_detector/database/datasets/paultimothymooney/chest-xray-pneumonia/versions/2/chest_xray",
-      "added_at": "/home/xiangpy"
-    }
-  },
-  "active": "chest-xray-pneumonia"
-}

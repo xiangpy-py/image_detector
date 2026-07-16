@@ -5,9 +5,11 @@ use rayon::prelude::*;
 
 use crate::cache::save_split_cache;
 use crate::dataset::scan_split;
-use crate::image::load_and_resize;
+use crate::image::load_and_resize_rgb;
 
 /// 处理一个 split：扫描目录、并行加载缩放图像、过滤损坏图像、写入缓存。
+///
+/// `merge_val` 仅当 `split_name == "train"` 时生效：true 则同时扫描 val 目录。
 ///
 /// 返回有效图像数量。
 pub fn process_split(
@@ -15,8 +17,9 @@ pub fn process_split(
     out: &Path,
     size: u32,
     split_name: &str,
+    merge_val: bool,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-    let entries = scan_split(root, split_name);
+    let entries = scan_split(root, split_name, merge_val);
     let total = entries.len();
     println!("{}: 找到 {} 张图像", split_name, total);
 
@@ -29,7 +32,7 @@ pub fn process_split(
     let results: Vec<_> = entries
         .par_iter()
         .map(|entry| {
-            let result = match load_and_resize(&entry.path, size) {
+            let result = match load_and_resize_rgb(&entry.path, size) {
                 Ok(img) => Ok(img),
                 Err(e) => {
                     eprintln!("警告：跳过损坏/无法读取的图像 {:?}: {}", entry.path, e);

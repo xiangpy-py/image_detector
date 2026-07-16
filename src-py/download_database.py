@@ -32,11 +32,57 @@ def download_dataset(cache_dir=None, dataset_root=None):
     if actual_root:
         logger.info(f"数据集已下载: {actual_root}")
         logger.info(f"内容: {os.listdir(actual_root)}")
+        # 下载后立即校验完整性，避免网络中断导致假成功
+        if not _verify_dataset_integrity(actual_root):
+            raise RuntimeError(
+                f"数据集完整性校验失败: {actual_root}，"
+                "请检查网络后重试，或手动删除不完整的目录后重新下载。"
+            )
         return str(actual_root)
 
     logger.info(f"数据集路径: {path}")
     logger.info(f"内容列表: {os.listdir(path)}")
+    if not _verify_dataset_integrity(path):
+        raise RuntimeError(
+            f"数据集完整性校验失败: {path}，请检查网络后重试。"
+        )
     return str(path)
+
+
+def _verify_dataset_integrity(root: Path) -> bool:
+    """校验数据集目录结构是否完整。
+
+    检查项：
+    - 必须包含 train/ 和 test/ 目录
+    - train/ 和 test/ 下必须分别有 NORMAL/ 和 PNEUMONIA/ 子目录
+    - 每个子目录至少要有 1 张图
+
+    kagglehub 不会校验文件完整性，下载到一半断网会留下损坏目录。
+    """
+    if not root.exists():
+        logger.error(f"根目录不存在: {root}")
+        return False
+
+    for split in ["train", "test"]:
+        split_dir = root / split
+        if not split_dir.exists():
+            logger.error(f"缺少 split 目录: {split_dir}")
+            return False
+        for cls in ["NORMAL", "PNEUMONIA"]:
+            cls_dir = split_dir / cls
+            if not cls_dir.exists():
+                logger.error(f"缺少类别目录: {cls_dir}")
+                return False
+            files = [
+                p for p in cls_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png"}
+            ]
+            if not files:
+                logger.error(f"类别目录无有效图像: {cls_dir}")
+                return False
+
+    logger.info("✅ 数据集完整性校验通过")
+    return True
 
 
 def _find_chest_xray_root(path):

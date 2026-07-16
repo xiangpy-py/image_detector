@@ -192,5 +192,5 @@ uv run python main.py evaluate
 - **缓存格式**：`(N, 3, H, W)` uint8 numpy 数组
 - **图像尺寸**：缓存 256，训练输入 224
 - **训练保存**：每个 epoch 保存历史，防止中断丢失
-- **早停机制**：patience=7，scheduler patience=3
+- **早停机制**：patience=10（`EARLY_STOP_PATIENCE`），scheduler patience=5（`SCHEDULER_PATIENCE`）
 - **日志**：使用 `loguru`，格式 `logger.info(...)`

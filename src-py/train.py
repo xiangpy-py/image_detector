@@ -91,7 +91,20 @@ def _count_trainable_params(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-def train(resume_from=None):
+def train(resume_from=None, overrides: dict | None = None):
+    """运行训练流程。
+
+    Args:
+        resume_from: 恢复训练的 checkpoint 路径
+        overrides: 覆盖 config.py 中的超参（仅本次训练生效），
+                   支持 keys: epochs, lr, weight_decay, patience
+    """
+    overrides = overrides or {}
+    epochs = int(overrides.get("epochs", EPOCHS))
+    lr = float(overrides.get("lr", LEARNING_RATE))
+    weight_decay = float(overrides.get("weight_decay", WEIGHT_DECAY))
+    patience = int(overrides.get("patience", EARLY_STOP_PATIENCE))
+
     set_seed()
 
     # 生成本次训练的唯一时间戳前缀，用于区分不同训练运行的模型
@@ -120,11 +133,11 @@ def train(resume_from=None):
     logger.info(f"损失函数: {type(criterion).__name__}")
 
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
+        model.parameters(), lr=lr, weight_decay=weight_decay
     )
 
     lr_scheduler = WarmupCosineScheduler(
-        optimizer, warmup_epochs=WARMUP_EPOCHS, total_epochs=EPOCHS
+        optimizer, warmup_epochs=WARMUP_EPOCHS, total_epochs=epochs
     )
     plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=SCHEDULER_FACTOR, patience=SCHEDULER_PATIENCE
@@ -168,7 +181,7 @@ def train(resume_from=None):
         logger.info(f"恢复至 epoch {start_epoch}, 当前最佳 val_f1={best_f1:.4f}")
     # -------------------
 
-    for epoch in range(start_epoch, EPOCHS):
+    for epoch in range(start_epoch, epochs):
         # ─── 两阶段：在 UNFREEZE_EPOCH 时解冻 backbone ───
         if FREEZE_BACKBONE and epoch == UNFREEZE_EPOCH:
             unfreeze_model(model)
@@ -176,13 +189,13 @@ def train(resume_from=None):
             logger.info(f"可训练参数: {_count_trainable_params(model):,}")
 
             # 重建 optimizer：避免 AdamW momentum 污染，并降低微调学习率
-            new_lr = LEARNING_RATE / 10
+            new_lr = lr / 10
             optimizer = torch.optim.AdamW(
-                model.parameters(), lr=new_lr, weight_decay=WEIGHT_DECAY
+                model.parameters(), lr=new_lr, weight_decay=weight_decay
             )
             # 新的 lr_scheduler：微调阶段从 new_lr 开始 cosine 下降，无 warmup
             lr_scheduler = WarmupCosineScheduler(
-                optimizer, warmup_epochs=0, total_epochs=EPOCHS - UNFREEZE_EPOCH, min_lr=1e-7
+                optimizer, warmup_epochs=0, total_epochs=epochs - UNFREEZE_EPOCH, min_lr=1e-7
             )
             plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer, mode="max", factor=SCHEDULER_FACTOR, patience=SCHEDULER_PATIENCE
@@ -198,12 +211,12 @@ def train(resume_from=None):
         else:
             current_lr = lr_scheduler.step(epoch)
         phase = "微调" if (not FREEZE_BACKBONE or epoch >= UNFREEZE_EPOCH) else "冻结"
-        logger.info(f"Epoch {epoch + 1}/{EPOCHS} | LR={current_lr:.2e} | 阶段: {phase}")
+        logger.info(f"Epoch {epoch + 1}/{epochs} | LR={current_lr:.2e} | 阶段: {phase}")
 
         model.train()
         running_loss = 0.0
 
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs}")
         for images, labels in pbar:
             images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True).float().unsqueeze(1)
@@ -245,7 +258,7 @@ def train(resume_from=None):
         val_f1_history.append(val_metrics["f1"])
 
         logger.info(
-            f"Epoch {epoch + 1}/{EPOCHS} | "
+            f"Epoch {epoch + 1}/{epochs} | "
             f"train_loss={train_loss:.4f} | "
             f"val_loss={val_metrics['loss']:.4f} | "
             f"val_acc={val_metrics['accuracy']:.4f} | "
@@ -258,9 +271,12 @@ def train(resume_from=None):
 
         plateau_scheduler.step(val_metrics["f1"])
 
+        # 写入 history.json：临时文件 + 原子 rename，避免崩溃时损坏
         history_path = OUTPUTS_DIR / "history.json"
-        with open(history_path, "w", encoding="utf-8") as f:
+        tmp_path = history_path.with_suffix(".json.tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(history, f, indent=2)
+        tmp_path.replace(history_path)
 
         smooth_f1 = _smooth_metric(val_f1_history, window=3)
 
@@ -321,8 +337,8 @@ def train(resume_from=None):
             last_path,
         )
 
-        if patience_counter >= EARLY_STOP_PATIENCE:
-            logger.info(f"早停触发 (patience={EARLY_STOP_PATIENCE}, 平滑 F1 未提升)")
+        if patience_counter >= patience:
+            logger.info(f"早停触发 (patience={patience}, 平滑 F1 未提升)")
             break
 
     logger.info("训练完成")

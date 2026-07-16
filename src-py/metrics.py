@@ -85,7 +85,18 @@ def get_loss_function(device, pos_weight=None, loss_type=None):
         raise ValueError(f"不支持的损失函数类型: {loss_type}")
 
 
-def evaluate_model(model, dataloader, device, criterion=None):
+def evaluate_model(model, dataloader, device, criterion=None, threshold=0.5):
+    """在 dataloader 上评估二分类模型。
+
+    Args:
+        model: 评估模型（应为 eval 模式）
+        dataloader: 数据加载器
+        device: torch device
+        criterion: 损失函数，None 则不计算 loss
+        threshold: 将概率二值化的阈值，默认 0.5
+            训练时使用 0.5 保证各 epoch 指标可比；
+            最终评估时由调用方传入最优阈值。
+    """
     model.eval()
     all_labels = []
     all_probs = []
@@ -110,7 +121,7 @@ def evaluate_model(model, dataloader, device, criterion=None):
 
     all_labels = np.array(all_labels)
     all_probs = np.array(all_probs)
-    all_preds = (all_probs >= 0.5).astype(int)
+    all_preds = (all_probs >= threshold).astype(int)
 
     metrics = {
         "accuracy": accuracy_score(all_labels, all_preds),
@@ -118,6 +129,7 @@ def evaluate_model(model, dataloader, device, criterion=None):
         "recall": recall_score(all_labels, all_preds, zero_division=0),
         "f1": f1_score(all_labels, all_preds, zero_division=0),
         "auc": roc_auc_score(all_labels, all_probs) if len(np.unique(all_labels)) > 1 else 0.0,
+        "threshold": float(threshold),
     }
     if has_loss:
         metrics["loss"] = total_loss / n_samples
@@ -126,5 +138,5 @@ def evaluate_model(model, dataloader, device, criterion=None):
 
 
 def get_criterion(device, pos_weight):
-    """兼容旧接口，返回 BCE Loss。"""
-    return nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    """兼容旧接口，返回与 get_loss_function(bce) 等价的损失函数。"""
+    return get_loss_function(device, pos_weight=pos_weight, loss_type="bce")

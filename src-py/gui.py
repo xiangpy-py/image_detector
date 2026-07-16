@@ -4,13 +4,15 @@
 """
 
 import json
+import os
+import re
+import subprocess
 import sys
 import traceback
 from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
@@ -40,15 +42,7 @@ from PySide6.QtWidgets import (
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from PIL import Image
-from sklearn.metrics import (
-    confusion_matrix,
-    roc_auc_score,
-    roc_curve,
-)
-from torch.amp import autocast, GradScaler
-from torch.utils.data import DataLoader
 from torchvision import transforms
-from tqdm import tqdm
 
 from config import (
     BATCH_SIZE,
@@ -76,12 +70,43 @@ from config import (
     WEIGHT_DECAY,
     override_paths,
 )
-from dataset import CachedDataset, get_class_counts, load_cached_data
 from image_process import preprocess_image_path
 from inference import load_trained_model, predict
-from metrics import evaluate_model, get_loss_function, get_pos_weight
-from model import build_model, set_seed
-from threshold_tuner import find_best_threshold, load_threshold, save_threshold
+from threshold_tuner import load_threshold
+
+# ───────────────────────────────────────────────────────────
+#  文件选择辅助函数
+# ───────────────────────────────────────────────────────────
+
+
+def _file_dialog_options() -> QFileDialog.Option:
+    """返回文件对话框选项。
+
+    Linux / macOS 强制使用 Qt 内置对话框，避免与全局 QSS 发生 GTK/QSS 样式冲突
+    （GTK 原生对话框在 Qt 样式表干预下会出现白屏/文字不可见等问题）。
+    Windows 保留原生对话框以获得更好的系统一致性体验。
+    """
+    if sys.platform == "win32":
+        return QFileDialog.Option(0)
+    # Linux / macOS：一律非原生，确保颜色、字体完全受控于 QSS
+    return QFileDialog.Option.DontUseNativeDialog
+
+
+def _open_file_dialog(parent, title, default_dir="", filter_str=""):
+    """统一的「选择文件」对话框，使用系统原生选择器。"""
+    return QFileDialog.getOpenFileName(
+        parent, title, default_dir, filter_str,
+        options=_file_dialog_options(),
+    )
+
+
+def _get_existing_directory(parent, title, default_dir=""):
+    """统一的「选择文件夹」对话框，使用系统原生选择器。"""
+    return QFileDialog.getExistingDirectory(
+        parent, title, default_dir,
+        options=_file_dialog_options(),
+    )
+
 
 # ───────────────────────────────────────────────────────────
 #  工具函数
@@ -118,22 +143,18 @@ def _style_button(btn, color="#3B82F6", text_color="white"):
 
 
 def _style_group(title):
-    """统一分组框样式——现代卡片风格。"""
+    """统一分组框样式——现代卡片风格（仅标题和边距，颜色由全局 QSS 控制）。"""
     g = QGroupBox(title)
     g.setStyleSheet(
         """
         QGroupBox {
             font-weight: bold;
             font-size: 14px;
-            border: 1px solid #E2E8F0;
-            border-radius: 10px;
             margin-top: 12px;
             padding-top: 16px;
             padding-left: 14px;
             padding-right: 14px;
             padding-bottom: 14px;
-            background: #FFFFFF;
-            color: #1E293B;
         }
         QGroupBox::title {
             subcontrol-origin: margin;
@@ -184,12 +205,27 @@ class NumericTableItem(QTableWidgetItem):
 
 
 class TrainWorker(QThread):
-    """后台训练线程，实时发射日志和指标信号。"""
+    """后台训练线程，调用 `uv run main.py train` 子进程并转发输出。"""
 
     log_signal = Signal(str)
     epoch_signal = Signal(int, dict)  # epoch, metrics_dict
     progress_signal = Signal(int, int)  # current, total
     finished_signal = Signal(bool, str)
+
+    # 匹配 train.py 输出中的 epoch 行：
+    #   Epoch 1/30 | train_loss=0.1234 | val_loss=... | val_acc=... | val_precision=... |
+    #   val_recall=... | val_f1=0.8765 | val_auc=0.9123 | lr=...
+    _EPOCH_RE = re.compile(
+        r"Epoch\s+(\d+)/(\d+)\s*\|"
+        r".*?val_acc=([\d.]+).*?"
+        r"val_precision=([\d.]+).*?"
+        r"val_recall=([\d.]+).*?"
+        r"val_f1=([\d.]+).*?"
+        r"val_auc=([\d.]+)"
+    )
+    # 单独的 train/val loss 也需要从其他行抓
+    _TRAIN_LOSS_RE = re.compile(r"train_loss=([\d.]+)")
+    _VAL_LOSS_RE = re.compile(r"val_loss=([\d.]+)")
 
     def __init__(self, epochs, lr, batch_size, weight_decay, patience, resume_from=None, parent=None):
         super().__init__(parent)
@@ -199,362 +235,157 @@ class TrainWorker(QThread):
         self.weight_decay = weight_decay
         self.patience = patience
         self.resume_from = resume_from
+        self._process: subprocess.Popen | None = None
 
     def _log(self, msg: str):
         self.log_signal.emit(msg)
 
+    def _build_command(self) -> list[str]:
+        """构造 `uv run main.py train ...` 命令。"""
+        project_root = Path(__file__).resolve().parent.parent
+        main_py = project_root / "main.py"
+        cmd = [
+            sys.executable,
+            str(main_py),
+            "train",
+            "--epochs", str(self.epochs),
+            "--lr", str(self.lr),
+            "--weight-decay", str(self.weight_decay),
+            "--patience", str(self.patience),
+        ]
+        if self.resume_from:
+            cmd.extend(["--resume", str(self.resume_from)])
+        return cmd
+
     def run(self):
+        cmd = self._build_command()
+        self._log(f"$ {' '.join(cmd)}")
         try:
-            set_seed()
-            MODELS_DIR.mkdir(parents=True, exist_ok=True)
-            OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            self._log(f"🖥️ 使用设备: {device}")
-
-            # 加载数据
-            self._log("📂 正在加载数据集...")
-            train_images, train_labels = load_cached_data("train")
-            test_images, test_labels = load_cached_data("test")
-            self._log(f"训练集类别分布: {get_class_counts(train_labels)}")
-
-            from sklearn.model_selection import train_test_split
-
-            train_idx, val_idx = train_test_split(
-                np.arange(len(train_labels)),
-                test_size=VAL_SIZE,
-                stratify=train_labels,
-                random_state=RANDOM_SEED,
+            self._process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                cwd=str(Path(__file__).resolve().parent.parent),
             )
 
-            train_transform = transforms.Compose(
-                [
-                    transforms.RandomCrop(IMG_SIZE),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.RandomRotation(10),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-                ]
-            )
-            val_transform = transforms.Compose(
-                [
-                    transforms.CenterCrop(IMG_SIZE),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-                ]
-            )
+            for raw in self._process.stdout:
+                line = raw.rstrip()
+                if not line:
+                    continue
+                self._log(line)
 
-            train_dataset = CachedDataset(train_images[train_idx], train_labels[train_idx], transform=train_transform)
-            val_dataset = CachedDataset(train_images[val_idx], train_labels[val_idx], transform=val_transform)
-            test_dataset = CachedDataset(test_images, test_labels, transform=val_transform)
+                m = self._EPOCH_RE.search(line)
+                if m:
+                    epoch = int(m.group(1))
+                    total = int(m.group(2))
+                    metrics = {
+                        "val_accuracy": float(m.group(3)),
+                        "val_precision": float(m.group(4)),
+                        "val_recall": float(m.group(5)),
+                        "val_f1": float(m.group(6)),
+                        "val_auc": float(m.group(7)),
+                    }
+                    tl = self._TRAIN_LOSS_RE.search(line)
+                    vl = self._VAL_LOSS_RE.search(line)
+                    if tl:
+                        metrics["train_loss"] = float(tl.group(1))
+                    if vl:
+                        metrics["val_loss"] = float(vl.group(1))
+                    self.epoch_signal.emit(epoch, metrics)
+                    self.progress_signal.emit(epoch, total)
 
-            train_loader = DataLoader(
-                train_dataset, batch_size=self.batch_size, shuffle=True,
-                num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY,
-                persistent_workers=NUM_WORKERS > 0,
-            )
-            val_loader = DataLoader(
-                val_dataset, batch_size=self.batch_size, shuffle=False,
-                num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY,
-                persistent_workers=NUM_WORKERS > 0,
-            )
-
-            # 构建模型
-            model = build_model(pretrained=True).to(device)
-            pos_weight = get_pos_weight(train_labels, device)
-            criterion = get_loss_function(device, pos_weight=pos_weight)
-            optimizer = torch.optim.AdamW(model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode="max", factor=SCHEDULER_FACTOR, patience=SCHEDULER_PATIENCE
-            )
-
-            use_amp = device.type == "cuda"
-            scaler = GradScaler(device=str(device)) if use_amp else None
-            amp_enabled = use_amp
-
-            start_epoch = 0
-            best_f1 = 0.0
-            patience_counter = 0
-            history = {"train_loss": [], "val_loss": [], "val_f1": [], "val_auc": []}
-
-            # 恢复训练
-            if self.resume_from:
-                resume_path = Path(self.resume_from)
-                if resume_path.exists():
-                    self._log(f"🔄 从 checkpoint 恢复训练: {resume_path}")
-                    checkpoint = torch.load(resume_path, map_location=device, weights_only=True)
-                    model.load_state_dict(checkpoint["model_state_dict"])
-                    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-                    if "scheduler_state_dict" in checkpoint:
-                        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-                    start_epoch = checkpoint.get("epoch", 0) + 1
-                    best_f1 = checkpoint.get("best_f1", 0.0)
-                    self._log(f"恢复至 epoch {start_epoch}, 当前最佳 val_f1={best_f1:.4f}")
-                else:
-                    self._log(f"⚠️ checkpoint 不存在: {resume_path}")
-
-            self._log(f"🏋️ 开始训练: epochs={self.epochs}, lr={self.lr}, batch_size={self.batch_size}")
-
-            for epoch in range(start_epoch, self.epochs):
-                self.progress_signal.emit(epoch + 1, self.epochs)
-                model.train()
-                running_loss = 0.0
-                pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{self.epochs}")
-                for images, labels in pbar:
-                    images = images.to(device, non_blocking=True)
-                    labels = labels.to(device, non_blocking=True).float().unsqueeze(1)
-                    optimizer.zero_grad()
-                    with autocast(device_type=device.type, enabled=amp_enabled):
-                        outputs = model(images)
-                        loss = criterion(outputs, labels)
-                    if amp_enabled:
-                        scaler.scale(loss).backward()
-                        scaler.step(optimizer)
-                        scaler.update()
-                    else:
-                        loss.backward()
-                        optimizer.step()
-                    running_loss += loss.item() * images.size(0)
-                    pbar.set_postfix({"loss": loss.item()})
-
-                train_loss = running_loss / len(train_loader.dataset)
-                val_metrics, _, _ = evaluate_model(model, val_loader, device, criterion)
-
-                history["train_loss"].append(train_loss)
-                history["val_loss"].append(val_metrics["loss"])
-                history["val_f1"].append(val_metrics["f1"])
-                history["val_auc"].append(val_metrics["auc"])
-
-                log_msg = (
-                    f"Epoch {epoch + 1}/{self.epochs} | "
-                    f"train_loss={train_loss:.4f} | "
-                    f"val_loss={val_metrics['loss']:.4f} | "
-                    f"val_acc={val_metrics['accuracy']:.4f} | "
-                    f"val_f1={val_metrics['f1']:.4f} | "
-                    f"val_auc={val_metrics['auc']:.4f}"
-                )
-                self._log(log_msg)
-                self.epoch_signal.emit(epoch + 1, {
-                    "train_loss": train_loss,
-                    "val_loss": val_metrics["loss"],
-                    "val_f1": val_metrics["f1"],
-                    "val_auc": val_metrics["auc"],
-                    "val_accuracy": val_metrics["accuracy"],
-                    "val_precision": val_metrics["precision"],
-                    "val_recall": val_metrics["recall"],
-                })
-
-                # 实时保存 history，供图表更新使用
-                history_path = OUTPUTS_DIR / "history.json"
-                with open(history_path, "w", encoding="utf-8") as f:
-                    json.dump(history, f, indent=2)
-
-                scheduler.step(val_metrics["f1"])
-
-                if val_metrics["f1"] > best_f1:
-                    best_f1 = val_metrics["f1"]
-                    patience_counter = 0
-                    best_path = MODELS_DIR / "best_model.pth"
-                    torch.save(
-                        {
-                            "epoch": epoch,
-                            "model_state_dict": model.state_dict(),
-                            "optimizer_state_dict": optimizer.state_dict(),
-                            "scheduler_state_dict": scheduler.state_dict(),
-                            "best_f1": best_f1,
-                        },
-                        best_path,
-                    )
-                    self._log(f"⭐ 最佳模型已保存，val_f1={best_f1:.4f} -> {best_path}")
-                else:
-                    patience_counter += 1
-
-                if patience_counter >= self.patience:
-                    self._log(f"🛑 早停触发 ( patience={self.patience} )")
-                    break
-
-            history_path = OUTPUTS_DIR / "history.json"
-            with open(history_path, "w", encoding="utf-8") as f:
-                json.dump(history, f, indent=2)
-            self._log(f"📊 训练历史已保存至 {history_path}")
-            self.finished_signal.emit(True, f"训练完成！最佳 val_f1={best_f1:.4f}")
+            self._process.wait()
+            ret = self._process.returncode
+            if ret == 0:
+                self.finished_signal.emit(True, "训练完成！")
+            else:
+                self.finished_signal.emit(False, f"子进程退出码 {ret}")
 
         except Exception as e:
             err = traceback.format_exc()
             self._log(f"❌ 训练失败: {e}\n{err}")
             self.finished_signal.emit(False, str(e))
+        finally:
+            self._process = None
+
+    def stop(self):
+        if self._process and self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
 
 
 class EvaluateWorker(QThread):
-    """后台评估线程。"""
+    """后台评估线程，调用 `uv run main.py evaluate` 子进程并转发输出。"""
 
     log_signal = Signal(str)
     result_signal = Signal(dict)
     finished_signal = Signal(bool, str)
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._process: subprocess.Popen | None = None
+
     def _log(self, msg: str):
         self.log_signal.emit(msg)
 
+    def _build_command(self) -> list[str]:
+        project_root = Path(__file__).resolve().parent.parent
+        main_py = project_root / "main.py"
+        return [sys.executable, str(main_py), "evaluate"]
+
     def run(self):
+        from config import OUTPUTS_DIR
+
+        cmd = self._build_command()
+        self._log(f"$ {' '.join(cmd)}")
         try:
-            OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            self._log(f"🖥️ 使用设备: {device}")
-
-            self._log("📂 正在加载数据...")
-            train_images, train_labels = load_cached_data("train")
-            test_images, test_labels = load_cached_data("test")
-
-            val_transform = transforms.Compose(
-                [
-                    transforms.CenterCrop(IMG_SIZE),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-                ]
+            self._process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                cwd=str(Path(__file__).resolve().parent.parent),
             )
 
-            from sklearn.model_selection import train_test_split
+            for raw in self._process.stdout:
+                line = raw.rstrip()
+                if line:
+                    self._log(line)
 
-            train_idx, val_idx = train_test_split(
-                np.arange(len(train_labels)),
-                test_size=VAL_SIZE,
-                stratify=train_labels,
-                random_state=RANDOM_SEED,
-            )
-            val_dataset = CachedDataset(train_images[val_idx], train_labels[val_idx], transform=val_transform)
-            test_dataset = CachedDataset(test_images, test_labels, transform=val_transform)
+            self._process.wait()
+            ret = self._process.returncode
 
-            val_loader = DataLoader(
-                val_dataset, batch_size=BATCH_SIZE, shuffle=False,
-                num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY,
-                persistent_workers=NUM_WORKERS > 0,
-            )
-            test_loader = DataLoader(
-                test_dataset, batch_size=BATCH_SIZE, shuffle=False,
-                num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY,
-                persistent_workers=NUM_WORKERS > 0,
-            )
-
-            model_path = MODELS_DIR / "best_model.pth"
-            if not model_path.exists():
-                raise FileNotFoundError(f"模型文件不存在: {model_path}")
-
-            model = build_model(pretrained=False)
-            checkpoint = torch.load(model_path, map_location=device, weights_only=True)
-            model.load_state_dict(checkpoint["model_state_dict"])
-            model.to(device)
-            self._log(f"✅ 模型已加载: {model_path}")
-
-            pos_weight = get_pos_weight(train_labels, device)
-            criterion = get_loss_function(device, pos_weight=pos_weight)
-
-            # 验证集
-            self._log("📊 正在评估验证集...")
-            val_metrics, val_labels, val_probs = evaluate_model(model, val_loader, device, criterion)
-            best_threshold, best_f1 = find_best_threshold(val_labels, val_probs, metric="f1")
-            threshold_path = save_threshold(best_threshold)
-            self._log(f"✅ 验证集最优阈值: {best_threshold:.4f} (F1={best_f1:.4f})，已保存")
-
-            # 测试集
-            self._log("📊 正在评估测试集...")
-            test_preds = (np.array(val_probs) >= best_threshold).astype(int)
-            test_metrics, test_labels, test_probs = evaluate_model(model, test_loader, device, criterion)
-            test_preds = (np.array(test_probs) >= best_threshold).astype(int)
-            test_metrics["threshold"] = best_threshold
-
-            # 保存图表
-            self._log("📈 正在生成图表...")
-
-            # ROC
-            fpr, tpr, _ = roc_curve(test_labels, test_probs)
-            auc = roc_auc_score(test_labels, test_probs)
-            fig = Figure(figsize=(8, 6))
-            ax = fig.add_subplot(111)
-            ax.plot(fpr, tpr, lw=2, label=f"AUC = {auc:.4f}")
-            ax.plot([0, 1], [0, 1], "k--", lw=1)
-            ax.set_xlabel("False Positive Rate")
-            ax.set_ylabel("True Positive Rate")
-            ax.set_title("ROC Curve")
-            ax.legend(loc="lower right")
-            fig.tight_layout()
-            fig.savefig(OUTPUTS_DIR / "roc_curve.png", dpi=150)
-
-            # Confusion Matrix
-            cm = confusion_matrix(test_labels, test_preds)
-            fig2 = Figure(figsize=(6, 5))
-            ax2 = fig2.add_subplot(111)
-            im = ax2.imshow(cm, interpolation="nearest", cmap="Blues")
-            ax2.set_title("Confusion Matrix")
-            fig2.colorbar(im, ax=ax2)
-            tick_marks = np.arange(len(CLASS_NAMES))
-            ax2.set_xticks(tick_marks)
-            ax2.set_yticks(tick_marks)
-            ax2.set_xticklabels(CLASS_NAMES)
-            ax2.set_yticklabels(CLASS_NAMES)
-            ax2.set_ylabel("True")
-            ax2.set_xlabel("Predicted")
-            thresh = cm.max() / 2.0
-            for i in range(cm.shape[0]):
-                for j in range(cm.shape[1]):
-                    ax2.text(
-                        j, i, format(cm[i, j], "d"),
-                        ha="center", va="center",
-                        color="white" if cm[i, j] > thresh else "black",
-                        fontsize=14,
-                    )
-            fig2.tight_layout()
-            fig2.savefig(OUTPUTS_DIR / "confusion_matrix.png", dpi=150)
-
-            # Training History
-            history_path = OUTPUTS_DIR / "history.json"
-            if history_path.exists():
-                with open(history_path, "r", encoding="utf-8") as f:
-                    history = json.load(f)
-                epochs = range(1, len(history["train_loss"]) + 1)
-                fig3 = Figure(figsize=(12, 4))
-                ax3 = fig3.add_subplot(1, 3, 1)
-                ax3.plot(epochs, history["train_loss"], label="Train Loss")
-                ax3.plot(epochs, history["val_loss"], label="Val Loss")
-                ax3.set_xlabel("Epoch")
-                ax3.set_ylabel("Loss")
-                ax3.legend()
-                ax3.set_title("Loss Curve")
-
-                ax4 = fig3.add_subplot(1, 3, 2)
-                ax4.plot(epochs, history["val_f1"], label="Val F1")
-                ax4.set_xlabel("Epoch")
-                ax4.set_ylabel("F1 Score")
-                ax4.legend()
-                ax4.set_title("Validation F1")
-
-                ax5 = fig3.add_subplot(1, 3, 3)
-                ax5.plot(epochs, history["val_auc"], label="Val AUC")
-                ax5.set_xlabel("Epoch")
-                ax5.set_ylabel("AUC")
-                ax5.legend()
-                ax5.set_title("Validation AUC")
-                fig3.tight_layout()
-                fig3.savefig(OUTPUTS_DIR / "training_history.png", dpi=150)
-                self._log("📈 训练历史图已保存")
-
-            # 保存报告
-            report = {
-                "val": val_metrics,
-                "test": test_metrics,
-                "threshold": best_threshold,
-            }
-            report_path = OUTPUTS_DIR / "metrics.json"
-            with open(report_path, "w", encoding="utf-8") as f:
-                json.dump(report, f, indent=2)
-            self._log(f"📄 评估报告已保存至 {report_path}")
-
-            self.result_signal.emit(report)
-            self.finished_signal.emit(True, "评估完成！")
+            # 评估完成后从 metrics.json 读结果
+            metrics_path = OUTPUTS_DIR / "metrics.json"
+            if ret == 0 and metrics_path.exists():
+                with open(metrics_path, "r", encoding="utf-8") as f:
+                    self.result_signal.emit(json.load(f))
+                self.finished_signal.emit(True, "评估完成！")
+            elif ret == 0:
+                self.finished_signal.emit(True, "评估完成，但未找到 metrics.json")
+            else:
+                self.finished_signal.emit(False, f"子进程退出码 {ret}")
 
         except Exception as e:
             err = traceback.format_exc()
             self._log(f"❌ 评估失败: {e}\n{err}")
             self.finished_signal.emit(False, str(e))
+        finally:
+            self._process = None
+
+    def stop(self):
+        if self._process and self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
 
 
 class PythonCacheWorker(QThread):
@@ -755,7 +586,7 @@ class RustCacheWorker(QThread):
                     self._log(f"📂 数据集根目录: {root}")
 
                 train_count, test_count = preprocess_dataset(
-                    str(root), str(out_dir), self.cache_size
+                    str(root), str(out_dir), self.cache_size, True
                 )
                 total_train += train_count
                 total_test += test_count
@@ -1002,11 +833,21 @@ class PneumoniaGUI(QWidget):
         self.setLayout(main_layout)
 
         # 全局样式
+        # 注意：不要对 QWidget 设置 background-color，否则会污染 QFileDialog /
+        # QMessageBox 等子对话框，导致 Linux GTK 主题下出现白屏、文字不可见等问题。
         self.setStyleSheet("""
-            QWidget {
-                font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+            /* ========== 1. 仅主窗口容器设背景，不污染子对话框 ========== */
+            PneumoniaGUI {
                 background-color: #F8FAFC;
             }
+
+            /* ========== 2. 字体栈：Linux 优先回退到系统自带中文字体 ========== */
+            QWidget {
+                font-family: "Segoe UI", "Microsoft YaHei", "Noto Sans CJK SC", "WenQuanYi Micro Hei", "DejaVu Sans", sans-serif;
+                color: #1E293B;
+            }
+
+            /* ========== 3. 输入控件 ========== */
             QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
                 padding: 8px 10px;
                 border: 1px solid #E2E8F0;
@@ -1015,7 +856,7 @@ class PneumoniaGUI(QWidget):
                 color: #1E293B;
                 font-size: 13px;
             }
-            QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+            QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
                 border: 2px solid #3B82F6;
             }
             QSpinBox::up-button, QSpinBox::down-button,
@@ -1025,15 +866,19 @@ class PneumoniaGUI(QWidget):
                 background: #F1F5F9;
                 border-radius: 4px;
             }
+
+            /* ========== 4. 日志区（暗色） ========== */
             QTextEdit {
                 border: 1px solid #E2E8F0;
                 border-radius: 8px;
                 background: #0F172A;
                 color: #E2E8F0;
-                font-family: "Consolas", "Courier New", monospace;
+                font-family: "JetBrains Mono", "Consolas", "Courier New", monospace;
                 font-size: 12px;
                 padding: 8px;
             }
+
+            /* ========== 5. 表格 ========== */
             QTableWidget {
                 border: 1px solid #E2E8F0;
                 border-radius: 8px;
@@ -1056,21 +901,24 @@ class PneumoniaGUI(QWidget):
                 border: none;
                 border-bottom: 2px solid #E2E8F0;
             }
-            QProgressBar {
-                border: none;
+
+            /* ========== 6. 按钮基础 ========== */
+            QPushButton {
                 border-radius: 8px;
-                text-align: center;
-                height: 22px;
-                background: #E2E8F0;
                 font-weight: bold;
-                font-size: 11px;
-                color: #475569;
+                font-size: 13px;
+                padding: 8px 18px;
             }
-            QProgressBar::chunk {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #3B82F6, stop:1 #60A5FA);
-                border-radius: 8px;
+            QPushButton:hover {
+                opacity: 0.9;
             }
+            QPushButton:disabled {
+                background-color: #E2E8F0;
+                color: #94A3B8;
+                border: none;
+            }
+
+            /* ========== 7. 分组框（颜色由全局 QSS 统一控制） ========== */
             QGroupBox {
                 background: #FFFFFF;
                 border: 1px solid #E2E8F0;
@@ -1091,6 +939,8 @@ class PneumoniaGUI(QWidget):
                 color: #475569;
                 font-size: 13px;
             }
+
+            /* ========== 8. 复选框 ========== */
             QCheckBox {
                 font-size: 13px;
                 color: #334155;
@@ -1107,26 +957,37 @@ class PneumoniaGUI(QWidget):
                 background: #3B82F6;
                 border: 1px solid #3B82F6;
             }
-            QPushButton {
-                border-radius: 8px;
-                font-weight: bold;
-                font-size: 13px;
-                padding: 8px 18px;
-            }
-            QPushButton:hover {
-                opacity: 0.9;
-            }
-            QPushButton:disabled {
-                background-color: #E2E8F0;
-                color: #94A3B8;
+
+            /* ========== 9. 进度条 ========== */
+            QProgressBar {
                 border: none;
+                border-radius: 8px;
+                text-align: center;
+                height: 22px;
+                background: #E2E8F0;
+                font-weight: bold;
+                font-size: 11px;
+                color: #475569;
             }
-            QDialog {
-                background: #FFFFFF;
-                border-radius: 12px;
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #3B82F6, stop:1 #60A5FA);
+                border-radius: 8px;
             }
-            QMessageBox {
-                background: #FFFFFF;
+
+            /* ========== 10. 对话框保险（万一仍被原生对话框唤起） ========== */
+            QDialog, QFileDialog, QMessageBox {
+                background-color: #FFFFFF;
+                color: #1E293B;
+            }
+            QDialog QLabel, QFileDialog QLabel, QMessageBox QLabel {
+                color: #1E293B;
+            }
+            QDialog QPushButton, QFileDialog QPushButton, QMessageBox QPushButton {
+                background-color: #3B82F6;
+                color: white;
+                padding: 6px 14px;
+                border-radius: 6px;
             }
         """)
 
@@ -1567,7 +1428,7 @@ class PneumoniaGUI(QWidget):
     # ───────────────────────────────────────────────
 
     def select_model_file(self):
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = _open_file_dialog(
             self, "选择模型文件", str(MODELS_DIR), "Model Files (*.pth)"
         )
         if not path:
@@ -1585,7 +1446,7 @@ class PneumoniaGUI(QWidget):
             QMessageBox.critical(self, "错误", f"模型加载失败: {e}")
 
     def select_image(self):
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = _open_file_dialog(
             self, "选择胸部 X 光图像", "", "Images (*.png *.jpg *.jpeg)"
         )
         if not path:
@@ -1633,7 +1494,7 @@ class PneumoniaGUI(QWidget):
         if self.model is None:
             QMessageBox.warning(self, "提示", "模型未加载，请先加载模型。")
             return
-        directory = QFileDialog.getExistingDirectory(self, "选择包含图像的文件夹")
+        directory = _get_existing_directory(self, "选择包含图像的文件夹")
         if not directory:
             return
         dir_path = Path(directory)
@@ -1747,7 +1608,7 @@ class PneumoniaGUI(QWidget):
     # ───────────────────────────────────────────────
 
     def _browse_resume_path(self):
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = _open_file_dialog(
             self, "选择 Checkpoint", str(MODELS_DIR), "Model Files (*.pth)"
         )
         if path:
@@ -1797,8 +1658,7 @@ class PneumoniaGUI(QWidget):
 
     def stop_training(self):
         if self.train_worker and self.train_worker.isRunning():
-            self.train_worker.terminate()
-            self.train_worker.wait(1000)
+            self.train_worker.stop()
             self.train_log.append("⏹️ 训练已停止")
         self.start_train_btn.setEnabled(True)
         self.stop_train_btn.setEnabled(False)
@@ -1949,6 +1809,8 @@ class PneumoniaGUI(QWidget):
         pixmap = QPixmap(str(path))
         if not pixmap.isNull():
             lbl.setPixmap(pixmap.scaled(780, 580, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            lbl.setText(f"⚠️ 无法加载图片:\n{path}")
         lbl.setAlignment(Qt.AlignCenter)
         layout.addWidget(lbl)
         dialog.setLayout(layout)
@@ -1959,7 +1821,7 @@ class PneumoniaGUI(QWidget):
     # ───────────────────────────────────────────────
 
     def select_dataset(self):
-        path = QFileDialog.getExistingDirectory(
+        path = _get_existing_directory(
             self, "选择数据集根目录（需包含 train/val/test 子目录）", str(DATASET_ROOT),
         )
         if not path:
@@ -2047,7 +1909,20 @@ class PneumoniaGUI(QWidget):
 
 
 def main():
+    # 高分屏适配
+    if hasattr(Qt, "AA_EnableHighDpiScaling"):
+        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    if hasattr(Qt, "AA_UseHighDpiPixmaps"):
+        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
     app = QApplication(sys.argv)
+
+    # 应用级字体兜底，Linux 下首选 Noto Sans CJK SC（跨发行版最稳）
+    font = app.font()
+    font.setFamily("Noto Sans CJK SC")
+    font.setPointSize(10)
+    app.setFont(font)
+
     window = PneumoniaGUI()
     window.show()
     sys.exit(app.exec())
