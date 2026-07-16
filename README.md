@@ -156,7 +156,7 @@ Generated outputs:
 | `outputs/confusion_matrix.png` | Confusion matrix heatmap |
 | `outputs/training_history.png` | Loss / F1 / AUC over epochs |
 | `outputs/metrics.json` | Accuracy, precision, recall, F1, AUC |
-| `outputs/threshold.json` | Optimal threshold for inference |
+| `outputs/threshold.json` | _(no longer generated; inference uses a fixed threshold from `config.py`)_ |
 
 ### Step 6: Launch the GUI
 

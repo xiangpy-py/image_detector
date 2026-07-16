@@ -156,7 +156,7 @@ uv run main.py evaluate
 | `outputs/confusion_matrix.png` | 混淆矩阵热力图 |
 | `outputs/training_history.png` | 各轮次的 Loss / F1 / AUC |
 | `outputs/metrics.json` | 准确率、精确率、召回率、F1、AUC |
-| `outputs/threshold.json` | 推理用的最佳阈值 |
+| `outputs/threshold.json` | _（已不再生成；推理使用 `config.py` 中的固定阈值）_ |
 
 ### 步骤 6：启动 GUI
 
@@ -366,7 +366,7 @@ image-detector/
 │   ├── metrics.py              # 准确率、精确率、召回率、F1、AUC、损失函数
 │   ├── inference.py            # 单张 / 批量图像预测
 │   ├── image_process.py        # 推理用的 PIL + torchvision 变换
-│   ├── threshold_tuner.py      # 最佳阈值搜索（网格）
+│   ├── threshold_tuner.py      # 网格阈值搜索（仅作工具函数）
 │   ├── gui.py                  # PySide6 桌面应用
 │   ├── download_database.py    # KaggleHub 数据集下载器
 │   └── logger_config.py        # loguru 配置

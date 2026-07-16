@@ -45,7 +45,8 @@ EARLY_STOP_PATIENCE = 10
 SCHEDULER_PATIENCE = 5
 SCHEDULER_FACTOR = 0.5
 
-DEFAULT_THRESHOLD = 0.5
+# 固定分类阈值（介于 0.6 与 0.7 之间，倾向保守以减少假阳性）
+DEFAULT_THRESHOLD = 0.65
 
 # ─── 模型架构选择 ───
 # "resnet50" | "densenet121" | "efficientnet_b0" | "efficientnet_b4" | "convnext_tiny"

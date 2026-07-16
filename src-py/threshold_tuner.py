@@ -1,10 +1,9 @@
-import json
-from pathlib import Path
+"""在 [0.05, 0.95] 网格上搜索最优分类阈值（仅供临时分析/曲线绘制，已不再用于推理）。"""
 
 import numpy as np
 from sklearn.metrics import f1_score, precision_score, recall_score
 
-from config import DEFAULT_THRESHOLD, OUTPUTS_DIR
+from config import DEFAULT_THRESHOLD
 
 
 def find_best_threshold(
@@ -49,24 +48,3 @@ def find_best_threshold(
             best_threshold = float(threshold)
 
     return best_threshold, best_score
-
-
-def save_threshold(threshold, path=None):
-    if path is None:
-        path = OUTPUTS_DIR / "threshold.json"
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump({"threshold": threshold}, f, indent=2)
-    return path
-
-
-def load_threshold(path=None):
-    if path is None:
-        path = OUTPUTS_DIR / "threshold.json"
-    path = Path(path)
-    if not path.exists():
-        return DEFAULT_THRESHOLD
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return float(data.get("threshold", DEFAULT_THRESHOLD))

@@ -2,11 +2,10 @@
 
 import torch
 
-from config import CLASS_NAMES, IMG_SIZE, MODELS_DIR
+from config import CLASS_NAMES, DEFAULT_THRESHOLD, IMG_SIZE, MODELS_DIR
 from image_process import preprocess_image_path
 from model import build_model
 from model_utils import find_model_path
-from threshold_tuner import load_threshold
 
 
 # TTA 变换列表：原图 + 水平翻转 + 两种轻微旋转。
@@ -115,7 +114,7 @@ def predict(image_path, model=None, device=None, threshold=None, use_tta=False):
         model, device = load_trained_model(device=device)
 
     if threshold is None:
-        threshold = load_threshold()
+        threshold = DEFAULT_THRESHOLD
 
     tensor = preprocess_image_path(image_path, size=IMG_SIZE)
 
@@ -162,7 +161,7 @@ def predict_batch(image_paths, model=None, device=None, threshold=None, batch_si
         model, device = load_trained_model(device=device)
 
     if threshold is None:
-        threshold = load_threshold()
+        threshold = DEFAULT_THRESHOLD
 
     results = []
     for i in range(0, len(image_paths), batch_size):

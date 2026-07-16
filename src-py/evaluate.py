@@ -10,13 +10,12 @@ import torch
 from loguru import logger
 from sklearn.metrics import confusion_matrix, roc_auc_score, roc_curve
 
-from config import CLASS_NAMES, OUTPUTS_DIR
+from config import CLASS_NAMES, DEFAULT_THRESHOLD, OUTPUTS_DIR
 from dataset import get_dataloaders, load_cached_data
 from logger_config import setup_logger
 from metrics import evaluate_model, get_loss_function, get_pos_weight
 from model import build_model
 from model_utils import find_model_path
-from threshold_tuner import find_best_threshold, save_threshold
 
 
 def _log_split_metrics(split_name: str, metrics: dict, threshold: float) -> None:
@@ -110,8 +109,8 @@ def run_evaluation(model_path: Path | None = None, use_ema: bool = True):
     """在 val + test 上评估模型。
 
     评估口径：
-    - val: 默认阈值 0.5 算指标，同时扫描最优阈值（用于 test）
-    - test: 用 val 上扫出的最优阈值算指标
+    - val: 用固定阈值 DEFAULT_THRESHOLD 算指标
+    - test: 用同一固定阈值 DEFAULT_THRESHOLD 算指标
     - 若 checkpoint 含 ema_state_dict 且 use_ema=True，优先评估 EMA 权重
       （与 train.py 训练时选 best 的口径保持一致）
     """
@@ -136,27 +135,21 @@ def run_evaluation(model_path: Path | None = None, use_ema: bool = True):
     pos_weight = get_pos_weight(train_labels, device)
     criterion = get_loss_function(device, pos_weight=pos_weight)
 
-    # ── 验证集：固定阈值 0.5 算指标 + 扫描最优阈值 ──
+    # ── 验证集：固定阈值 DEFAULT_THRESHOLD 算指标 ──
     val_metrics, val_labels, val_probs = evaluate_model(
         model, val_loader, device, criterion
     )
     _log_split_metrics("Val", val_metrics, threshold=val_metrics["threshold"])
 
-    best_threshold, best_f1 = find_best_threshold(val_labels, val_probs, metric="f1")
-    threshold_path = save_threshold(best_threshold)
-    logger.info(
-        f"验证集最优阈值: {best_threshold:.4f} (F1={best_f1:.4f})，已保存至 {threshold_path}"
-    )
-
-    # ── 测试集：用最优阈值重算 ──
+    # ── 测试集：用同一固定阈值重算 ──
     test_metrics, test_labels, test_probs = evaluate_model(
-        model, test_loader, device, criterion, threshold=best_threshold
+        model, test_loader, device, criterion, threshold=DEFAULT_THRESHOLD
     )
-    _log_split_metrics("Test", test_metrics, threshold=best_threshold)
+    _log_split_metrics("Test", test_metrics, threshold=DEFAULT_THRESHOLD)
 
     plot_roc(test_labels, test_probs, OUTPUTS_DIR / "roc_curve.png")
     plot_confusion_matrix(
-        test_labels, test_probs, OUTPUTS_DIR / "confusion_matrix.png", threshold=best_threshold
+        test_labels, test_probs, OUTPUTS_DIR / "confusion_matrix.png", threshold=DEFAULT_THRESHOLD
     )
 
     history_path = OUTPUTS_DIR / "history.json"
@@ -166,7 +159,7 @@ def run_evaluation(model_path: Path | None = None, use_ema: bool = True):
     report = {
         "val": val_metrics,
         "test": test_metrics,
-        "threshold": best_threshold,
+        "threshold": DEFAULT_THRESHOLD,
     }
     report_path = OUTPUTS_DIR / "metrics.json"
     with open(report_path, "w", encoding="utf-8") as f:

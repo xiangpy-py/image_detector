@@ -72,7 +72,6 @@ from config import (
 )
 from image_process import preprocess_image_path
 from inference import load_trained_model, predict
-from threshold_tuner import load_threshold
 
 # ───────────────────────────────────────────────────────────
 #  文件选择辅助函数
@@ -1400,7 +1399,6 @@ class PneumoniaGUI(QWidget):
     def _load_model(self):
         try:
             self.model, self.device = load_trained_model()
-            self.threshold = load_threshold()
             self.model_status_label.setText(
                 f"模型: 已加载 (threshold={self.threshold:.4f})"
             )
@@ -1435,7 +1433,6 @@ class PneumoniaGUI(QWidget):
             return
         try:
             self.model, self.device = load_trained_model(model_path=path)
-            self.threshold = load_threshold()
             self.model_path_label.setText(f"已加载: {path}")
             self.model_status_label.setText(
                 f"模型: 已加载 (threshold={self.threshold:.4f})"
