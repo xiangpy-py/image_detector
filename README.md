@@ -34,7 +34,7 @@ Traditional medical image analysis requires radiologists to manually inspect tho
 
 It is designed as a **complete engineering product**, not just a research notebook:
 
-- **Train** a ResNet-50 model with transfer learning, mixed precision, and early stopping
+- **Train** a DenseNet121 model (configurable: ResNet-50 + SE, EfficientNet-B0/B4, ConvNeXt-Tiny) with transfer learning, mixed precision, EMA, and early stopping
 - **Evaluate** with ROC curves, confusion matrices, and threshold optimization
 - **Detect** via an intuitive desktop GUI with real-time confidence scoring
 - **Accelerate** data loading with a Rust-powered parallel preprocessing engine
@@ -60,6 +60,10 @@ uv sync
 
 # Build the Rust extension (required for preprocessing)
 uv run maturin develop
+
+# If `uv run maturin develop` is slow on first run, this is normal:
+# Rust is compiling PyO3, image, ndarray, rayon and other heavy crates.
+# Subsequent builds use incremental compilation and are much faster.
 ```
 
 > [!TIP]
@@ -91,11 +95,17 @@ uv run main.py train
 ```
 
 Training includes:
-- Weighted BCE loss for class imbalance
-- ReduceLROnPlateau scheduler
-- Early stopping (patience = 7)
+- Label smoothing + weighted BCE loss for class imbalance
+- Two-stage transfer learning: freeze backbone, then unfreeze and fine-tune
+- Warmup + Cosine annealing + ReduceLROnPlateau schedulers
+- EMA (Exponential Moving Average) for stable inference
+- Gradient clipping
+- Early stopping (patience = 10, monitors `val_f1`)
 - Automatic Mixed Precision (AMP) on CUDA
 - Checkpoint resume with `--resume path/to/checkpoint.pth`
+
+> [!NOTE]
+> The `evaluate` command automatically loads the latest `*_best_model.pth` checkpoint in `models/`.
 
 ### 5. Evaluate
 
@@ -131,19 +141,22 @@ Upload a chest X-ray image and get an instant prediction with confidence score.
                      │
 ┌────────────────────┴────────────────────────┐
 │           Python Deep Learning Layer         │
-│  model.py (ResNet-50)  →  train.py          │
+│  model.py (DenseNet121*) →  train.py        │
 │  dataset.py (CachedDataset) → evaluate.py   │
 │  inference.py (single / batch)              │
 └────────────────────┬────────────────────────┘
                      │
 ┌────────────────────┴────────────────────────┐
 │            Rust Preprocessing Layer          │
-│  lib.rs (PyO3)  →  Parallel read/resize     │
+│  lib.rs (PyO3)  →  processor.rs             │
+│  dataset.rs + image.rs + cache.rs           │
 │  rayon + image crate  →  .npy uint8 cache   │
 └─────────────────────────────────────────────┘
+
+* Model architecture is configurable in src-py/config.py
 ```
 
-**Key design decision:** Rust handles the **I/O-bound** preprocessing (reading 5,216 JPEGs, resizing, writing `.npy` cache). Python handles the **compute-bound** deep learning training. This separation eliminates Python's GIL bottleneck during data loading and reduces training startup time from minutes to seconds.
+**Key design decision:** Rust handles the **I/O-bound** preprocessing (reading ~5,856 JPEGs, resizing, writing `.npy` cache). Python handles the **compute-bound** deep learning training. This separation eliminates Python's GIL bottleneck during data loading and reduces training startup time from minutes to seconds.
 
 ---
 
@@ -151,8 +164,8 @@ Upload a chest X-ray image and get an instant prediction with confidence score.
 
 | Command | Description |
 |---------|-------------|
-| `train` | Train the ResNet-50 model with early stopping and checkpointing |
-| `evaluate` | Evaluate model on test set, generate ROC/CM/history plots |
+| `train` | Train the model (DenseNet121 by default) with early stopping and checkpointing |
+| `evaluate` | Evaluate model on test set, generate ROC / CM / history plots |
 | `gui` | Launch the PySide6 desktop application |
 | `cache` | Run Rust preprocessing to generate `.npy` image caches |
 | `download` | Download the Chest X-Ray dataset from KaggleHub |
@@ -166,7 +179,7 @@ Upload a chest X-ray image and get an instant prediction with confidence score.
 | `--dataset-name` | Use a registered dataset name | `--dataset-name chest1` |
 | `--cache-dir` | Override cache directory | `--cache-dir /tmp/cache` |
 | `--models-dir` | Override model save directory | `--models-dir /tmp/models` |
-| `--resume` | Resume from checkpoint | `--resume models/best_model.pth` |
+| `--resume` | Resume from checkpoint | `--resume models/20260715_1401_best_model.pth` |
 
 ### Environment variables
 
@@ -221,20 +234,24 @@ The GUI provides a **radiologist-friendly** interface for one-off diagnosis:
 
 | Feature | Implementation | Why it matters |
 |---------|---------------|----------------|
-| **Class imbalance handling** | `BCEWithLogitsLoss(pos_weight)` | PNEUMONIA is ~3x more common; weighting prevents model bias toward majority class |
-| **Stratified split** | `sklearn.train_test_split(stratify=labels)` | Train/val sets preserve the same 25%/75% class ratio |
+| **Class imbalance handling** | `LabelSmoothingBCEWithLogitsLoss(pos_weight)` + `WeightedRandomSampler` | PNEUMONIA is ~3x more common; weighting and balanced sampling prevent majority bias |
+| **Stratified split** | `train_test_split(stratify=labels)` | Train/val sets preserve class ratio; original val/ is merged into train |
 | **Threshold tuning** | Grid search on validation F1 | Default 0.5 is rarely optimal for medical diagnosis; we find the best operating point |
-| **ImageNet normalization** | `mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]` | Leverages pre-trained ResNet-50 weights effectively |
+| **ImageNet normalization** | `mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]` | Leverages pre-trained ImageNet weights effectively |
 
 ### Training Pipeline
 
 | Feature | Implementation | Benefit |
 |---------|---------------|---------|
-| **Transfer learning** | ResNet-50 `IMAGENET1K_V2` | Faster convergence, better generalization on small medical datasets |
+| **Transfer learning** | DenseNet121 `IMAGENET1K_V1` (configurable) | Faster convergence, better generalization on small medical datasets |
 | **Mixed precision** | `torch.amp.autocast` + `GradScaler` | ~2x faster training on NVIDIA GPUs, same model quality |
-| **Early stopping** | Patience = 7, monitor `val_f1` | Prevents overfitting; saves training time |
+| **Two-stage fine-tuning** | Freeze backbone for N epochs, then unfreeze at lower LR | Stabilizes pre-trained features before global adjustment |
+| **Warmup + Cosine** | Linear warmup, then cosine annealing | Avoids destroying pre-trained weights; smooth LR decay |
+| **Early stopping** | Patience = 10, monitor `val_f1` | Prevents overfitting; saves training time |
 | **LR scheduling** | `ReduceLROnPlateau` | Automatically reduces LR when validation F1 plateaus |
-| **Checkpoint resume** | Saves model + optimizer + scheduler + epoch | Recover from crashes or stop/resume experiments |
+| **EMA** | Exponential moving average of model weights | More stable inference and better generalization |
+| **Gradient clipping** | `max_norm=1.0` | Prevents gradient explosion during fine-tuning |
+| **Checkpoint resume** | Saves model + optimizer + scheduler + epoch + EMA | Recover from crashes or stop/resume experiments |
 | **Determinism** | `set_seed(42)` | Fully reproducible results across runs |
 
 ### Data Pipeline
@@ -242,9 +259,10 @@ The GUI provides a **radiologist-friendly** interface for one-off diagnosis:
 | Feature | Implementation | Benefit |
 |---------|---------------|---------|
 | **Rust preprocessing** | `rayon` parallel + `image` crate | Parallel I/O saturates disk bandwidth; no Python GIL contention |
-| **Cache-first loading** | `.npy` uint8 tensors | Training starts instantly; zero per-epoch JPEG decoding |
-| **Data augmentation** | RandomCrop(224), HorizontalFlip, Rotation(10°) | Increases effective training size; improves generalization |
-| **Validation consistency** | CenterCrop(224) + same normalization | Ensures fair evaluation; no data leakage |
+| **Cache-first loading** | `.npy` uint8 tensors `(N, 3, 256, 256)` | Training starts instantly; zero per-epoch JPEG decoding |
+| **Data augmentation** | RandomResizedCrop(224, scale=0.8-1.0), HorizontalFlip, Rotation(5°), RandomAffine | Geometric-only augmentation preserves tissue density; improves generalization |
+| **Validation consistency** | Resize(256) → CenterCrop(224) + same normalization | Ensures fair evaluation; no data leakage |
+| **Medical-safe augmentation** | No ColorJitter / GaussianBlur | Protects diagnostic density/contrast information in X-rays |
 
 ---
 
@@ -269,8 +287,7 @@ The GUI provides a **radiologist-friendly** interface for one-off diagnosis:
 - **Python:** 3.12+
 - **Rust:** 1.80+ (for building the preprocessing extension)
 - **uv:** [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
-- **maturin:** `pip install maturin` (for Rust/Python bridge)
-- **Optional:** CUDA-capable GPU for accelerated training
+- **Optional:** CUDA-capable GPU for accelerated training (training is feasible on CPU but much slower)
 
 ---
 
@@ -297,6 +314,7 @@ uv sync
 
 # Build Rust extension in the managed environment
 uv run maturin develop
+# First build may take several minutes; subsequent builds are incremental.
 ```
 
 > [!TIP]
@@ -346,11 +364,11 @@ This generates:
 ### STEP 4: Model training
 
 ```bash
-# Full training (20 epochs max, early stopping)
+# Full training (30 epochs max, early stopping)
 uv run main.py train
 
 # Resume from checkpoint
-uv run main.py train --resume models/best_model.pth
+uv run main.py train --resume models/20260715_1401_best_model.pth
 
 # Train with a specific dataset
 uv run main.py train --dataset-name chest1
@@ -360,7 +378,10 @@ Training monitors:
 - `train_loss` — training set BCE loss
 - `val_loss` / `val_f1` / `val_auc` — validation metrics
 
-Best model is saved to `models/best_model.pth` (based on highest `val_f1`).
+Best models are saved with timestamps to `models/`, e.g.:
+- `models/YYYYMMDD_HHMM_best_model.pth` — highest `val_f1`
+- `models/YYYYMMDD_HHMM_best_auc_model.pth` — highest `val_auc`
+- `models/YYYYMMDD_HHMM_last_model.pth` — final epoch checkpoint
 
 Training history is saved to `outputs/history.json`.
 
@@ -371,7 +392,7 @@ uv run main.py evaluate
 ```
 
 Evaluation pipeline:
-1. Load `best_model.pth`
+1. Load the latest `*_best_model.pth` checkpoint
 2. Evaluate on **validation set** to find the optimal classification threshold (grid search maximizing F1)
 3. Evaluate on **test set** using the optimized threshold
 4. Generate plots and save metrics report
@@ -414,7 +435,11 @@ image-detector/
 ├── .gitignore
 │
 ├── src/                        # Rust source
-│   ├── lib.rs                  # PyO3 extension + parallel preprocessing
+│   ├── lib.rs                  # PyO3 extension entry point
+│   ├── processor.rs            # Parallel image processing pipeline
+│   ├── dataset.rs              # Dataset directory scanning
+│   ├── image.rs                # Image load + Lanczos3 resize
+│   ├── cache.rs                # NumPy cache writer
 │   └── bin/
 │       └── preprocess.rs       # Standalone Rust CLI preprocessor
 │
@@ -422,11 +447,11 @@ image-detector/
 │   ├── main.py                 # CLI argument parsing + command dispatch
 │   ├── config.py               # Global constants + path overrides
 │   ├── system.py               # Cross-platform paths + dataset registry
-│   ├── model.py                # ResNet-50 builder + seed setter
+│   ├── model.py                # Model builder (DenseNet121 default) + seed setter
 │   ├── dataset.py              # CachedDataset + DataLoader factory
-│   ├── train.py                # Training loop with AMP/early stopping
+│   ├── train.py                # Training loop with AMP/EMA/early stopping
 │   ├── evaluate.py             # Evaluation + plot generation
-│   ├── metrics.py              # Accuracy, precision, recall, F1, AUC
+│   ├── metrics.py              # Accuracy, precision, recall, F1, AUC, losses
 │   ├── inference.py            # Single/batch image prediction
 │   ├── image_process.py        # PIL + torchvision transforms for inference
 │   ├── threshold_tuner.py      # Optimal threshold search (grid)
@@ -449,7 +474,9 @@ image-detector/
 │
 ├── cache/                      # Rust-generated .npy caches (gitignored)
 ├── models/                     # Saved checkpoints (gitignored)
-└── outputs/                    # Evaluation plots + logs (gitignored)
+├── outputs/                    # Evaluation plots + logs (gitignored)
+├── datasets.json               # Registered dataset manifest (created by CLI/GUI)
+└── 报告/                        # Experiment report directory (gitignored)
 ```
 
 ---
@@ -471,7 +498,7 @@ uv run pytest -v
 Coverage includes:
 - ✅ Configuration constants and path overrides
 - ✅ CachedDataset (len, getitem, transforms, full pipeline)
-- ✅ ResNet-50 model architecture and forward pass
+- ✅ DenseNet121 / ResNet-50 / EfficientNet / ConvNeXt model architecture and forward pass
 - ✅ Metric computation (perfect prediction, single-class edge cases)
 - ✅ Image preprocessing (resize, normalize, different input sizes)
 - ✅ System utilities (platform detection, path resolution, env overrides)
@@ -514,15 +541,11 @@ uv run main.py train
 
 ### Extending the model
 
-Edit `src-py/model.py` to swap architectures:
+Edit `src-py/config.py` to swap architectures:
 
 ```python
-# Example: switch to ResNet-101
-def build_model(pretrained=True):
-    weights = models.ResNet101_Weights.IMAGENET1K_V2 if pretrained else None
-    model = models.resnet101(weights=weights)
-    model.fc = nn.Linear(model.fc.in_features, 1)
-    return model
+# Switch architecture by editing MODEL_ARCH in src-py/config.py
+MODEL_ARCH = "resnet50"  # "densenet121" | "resnet50" | "efficientnet_b0" | "efficientnet_b4" | "convnext_tiny"
 ```
 
 ---

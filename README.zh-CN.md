@@ -34,7 +34,7 @@
 
 它被设计为一个**完整的工程化产品**，而非仅仅是一个研究笔记本：
 
-- **训练** —— 基于迁移学习的 ResNet-50 模型，支持混合精度和早停
+- **训练** —— 默认 DenseNet121 模型（可配置：ResNet-50 + SE 注意力、EfficientNet-B0/B4、ConvNeXt-Tiny），支持迁移学习、混合精度、EMA 和早停
 - **评估** —— ROC 曲线、混淆矩阵和阈值优化
 - **检测** —— 直观的桌面 GUI，实时显示置信度分数
 - **加速** —— Rust 驱动的并行预处理引擎
@@ -60,6 +60,10 @@ uv sync
 
 # 构建 Rust 扩展（预处理必需）
 uv run maturin develop
+
+# 首次运行 `uv run maturin develop` 较慢属于正常现象：
+# Rust 正在编译 PyO3、image、ndarray、rayon 等重型依赖。
+# 后续构建会利用增量编译，速度明显加快。
 ```
 
 > [!TIP]
@@ -91,11 +95,17 @@ uv run main.py train
 ```
 
 训练包含以下特性：
-- 处理类别不平衡的加权 BCE 损失
-- ReduceLROnPlateau 学习率调度器
-- 早停（patience = 7）
+- 标签平滑 + 加权 BCE 损失处理类别不平衡
+- 两阶段迁移学习：先冻结 backbone，再解冻并微调
+- Warmup + Cosine 退火 + ReduceLROnPlateau 学习率调度
+- EMA（指数移动平均）稳定推理
+- 梯度裁剪
+- 早停（patience = 10，监控 `val_f1`）
 - CUDA 上的自动混合精度（AMP）
 - 通过 `--resume path/to/checkpoint.pth` 恢复训练
+
+> [!NOTE]
+> `evaluate` 子命令会自动加载 `models/` 目录下时间戳最新的 `*_best_model.pth` 检查点。
 
 ### 5. 评估
 
@@ -131,19 +141,22 @@ uv run main.py gui
                      │
 ┌────────────────────┴────────────────────────┐
 │           Python 深度学习层                  │
-│  model.py (ResNet-50)  →  train.py          │
+│  model.py (DenseNet121*) →  train.py        │
 │  dataset.py (CachedDataset) → evaluate.py   │
 │  inference.py (单张 / 批量推理)              │
 └────────────────────┬────────────────────────┘
                      │
 ┌────────────────────┴────────────────────────┐
 │            Rust 预处理层                     │
-│  lib.rs (PyO3)  →  并行读取 / 缩放          │
+│  lib.rs (PyO3)  →  processor.rs             │
+│  dataset.rs + image.rs + cache.rs           │
 │  rayon + image crate  →  .npy uint8 缓存    │
 └─────────────────────────────────────────────┘
+
+* 模型架构可在 src-py/config.py 中配置
 ```
 
-**关键设计决策：** Rust 处理 **I/O 密集型** 的预处理（读取 5,216 张 JPEG、缩放、写入 `.npy` 缓存）。Python 处理 **计算密集型** 的深度学习训练。这种分离消除了 Python GIL 在数据加载时的瓶颈，将训练启动时间从分钟级缩短到秒级。
+**关键设计决策：** Rust 处理 **I/O 密集型** 的预处理（读取约 5,856 张 JPEG、缩放、写入 `.npy` 缓存）。Python 处理 **计算密集型** 的深度学习训练。这种分离消除了 Python GIL 在数据加载时的瓶颈，将训练启动时间从分钟级缩短到秒级。
 
 ---
 
@@ -151,7 +164,7 @@ uv run main.py gui
 
 | 命令 | 说明 |
 |------|------|
-| `train` | 训练 ResNet-50 模型，支持早停和检查点保存 |
+| `train` | 训练模型（默认 DenseNet121），支持早停和检查点保存 |
 | `evaluate` | 在测试集上评估模型，生成 ROC / 混淆矩阵 / 历史图 |
 | `gui` | 启动 PySide6 桌面应用程序 |
 | `cache` | 运行 Rust 预处理，生成 `.npy` 图像缓存 |
@@ -166,7 +179,7 @@ uv run main.py gui
 | `--dataset-name` | 使用已注册的数据集名称 | `--dataset-name chest1` |
 | `--cache-dir` | 覆盖缓存目录 | `--cache-dir /tmp/cache` |
 | `--models-dir` | 覆盖模型保存目录 | `--models-dir /tmp/models` |
-| `--resume` | 从检查点恢复 | `--resume models/best_model.pth` |
+| `--resume` | 从检查点恢复 | `--resume models/20260715_1401_best_model.pth` |
 
 ### 环境变量
 
@@ -221,20 +234,24 @@ GUI 提供了一个**对放射科医生友好**的单次诊断界面：
 
 | 特性 | 实现方式 | 为什么重要 |
 |------|---------|-----------|
-| **类别不平衡处理** | `BCEWithLogitsLoss(pos_weight)` | PNEUMONIA 约是 NORMAL 的 3 倍；加权可防止模型偏向多数类 |
-| **分层划分** | `sklearn.train_test_split(stratify=labels)` | 训练 / 验证集保持相同的 25% / 75% 类别比例 |
+| **类别不平衡处理** | `LabelSmoothingBCEWithLogitsLoss(pos_weight)` + `WeightedRandomSampler` | PNEUMONIA 约是 NORMAL 的 3 倍；加权与均衡采样防止模型偏向多数类 |
+| **分层划分** | `train_test_split(stratify=labels)` | 训练 / 验证集保持类别比例；原始 val/ 合并到 train |
 | **阈值调优** | 在验证集 F1 上进行网格搜索 | 默认 0.5 对医学诊断 rarely 最优；我们找到最佳工作点 |
-| **ImageNet 归一化** | `mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]` | 有效利用预训练 ResNet-50 权重 |
+| **ImageNet 归一化** | `mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]` | 有效利用预训练 ImageNet 权重 |
 
 ### 训练流水线
 
 | 特性 | 实现方式 | 优势 |
 |------|---------|------|
-| **迁移学习** | ResNet-50 `IMAGENET1K_V2` | 在小型医学数据集上收敛更快、泛化更好 |
+| **迁移学习** | DenseNet121 `IMAGENET1K_V1`（可配置） | 在小型医学数据集上收敛更快、泛化更好 |
 | **混合精度** | `torch.amp.autocast` + `GradScaler` | 在 NVIDIA GPU 上训练速度提升约 2 倍，模型质量不变 |
-| **早停** | Patience = 7，监控 `val_f1` | 防止过拟合；节省训练时间 |
+| **两阶段微调** | 先冻结 backbone 训练 N 轮，再解冻以更低学习率微调 | 稳定预训练特征后再做全局调整 |
+| **Warmup + Cosine** | 线性预热，然后余弦退火 | 避免破坏预训练权重；平滑学习率衰减 |
+| **早停** | Patience = 10，监控 `val_f1` | 防止过拟合；节省训练时间 |
 | **学习率调度** | `ReduceLROnPlateau` | 验证 F1 停滞时自动降低学习率 |
-| **检查点恢复** | 保存 model + optimizer + scheduler + epoch | 从崩溃中恢复，或随时中断 / 继续实验 |
+| **EMA** | 模型权重的指数移动平均 | 推理更稳定，泛化更好 |
+| **梯度裁剪** | `max_norm=1.0` | 微调时防止梯度爆炸 |
+| **检查点恢复** | 保存 model + optimizer + scheduler + epoch + EMA | 从崩溃中恢复，或随时中断 / 继续实验 |
 | **确定性** | `set_seed(42)` | 每次运行结果完全可复现 |
 
 ### 数据流水线
@@ -242,9 +259,10 @@ GUI 提供了一个**对放射科医生友好**的单次诊断界面：
 | 特性 | 实现方式 | 优势 |
 |------|---------|------|
 | **Rust 预处理** | `rayon` 并行 + `image` crate | 并行 I/O 充分压榨磁盘带宽；无 Python GIL 竞争 |
-| **缓存优先加载** | `.npy` uint8 张量 | 训练瞬间启动；每轮训练零 JPEG 解码开销 |
-| **数据增强** | RandomCrop(224)、HorizontalFlip、Rotation(10°) | 有效增加训练数据量；提升泛化能力 |
-| **验证一致性** | CenterCrop(224) + 相同归一化 | 确保公平评估；无数据泄露 |
+| **缓存优先加载** | `.npy` uint8 张量 `(N, 3, 256, 256)` | 训练瞬间启动；每轮训练零 JPEG 解码开销 |
+| **数据增强** | RandomResizedCrop(224, scale=0.8-1.0)、HorizontalFlip、Rotation(5°)、RandomAffine | 仅几何变换，保留组织密度；提升泛化能力 |
+| **验证一致性** | Resize(256) → CenterCrop(224) + 相同归一化 | 确保公平评估；无数据泄露 |
+| **医学安全增强** | 不使用 ColorJitter / GaussianBlur | 保护 X 光诊断所需的密度 / 对比度信息 |
 
 ---
 
@@ -269,8 +287,7 @@ GUI 提供了一个**对放射科医生友好**的单次诊断界面：
 - **Python：** 3.12+
 - **Rust：** 1.80+（用于构建预处理扩展）
 - **uv：** [安装 uv](https://docs.astral.sh/uv/getting-started/installation/)
-- **maturin：** `pip install maturin`（用于 Rust / Python 桥接）
-- **可选：** 支持 CUDA 的 GPU，用于加速训练
+- **可选：** 支持 CUDA 的 GPU，用于加速训练（CPU 训练也可行，但速度慢很多）
 
 ---
 
@@ -297,6 +314,7 @@ uv sync
 
 # 在 uv 管理的虚拟环境中构建 Rust 扩展
 uv run maturin develop
+# 首次构建可能需要数分钟；后续构建为增量编译。
 ```
 
 > [!TIP]
@@ -346,11 +364,11 @@ uv run main.py cache
 ### 步骤 4：模型训练
 
 ```bash
-# 完整训练（最多 20 轮，早停）
+# 完整训练（最多 30 轮，早停）
 uv run main.py train
 
 # 从检查点恢复
-uv run main.py train --resume models/best_model.pth
+uv run main.py train --resume models/20260715_1401_best_model.pth
 
 # 使用指定数据集训练
 uv run main.py train --dataset-name chest1
@@ -360,7 +378,10 @@ uv run main.py train --dataset-name chest1
 - `train_loss` — 训练集 BCE 损失
 - `val_loss` / `val_f1` / `val_auc` — 验证集指标
 
-最佳模型基于最高 `val_f1` 保存到 `models/best_model.pth`。
+最佳模型以时间戳命名保存到 `models/`，例如：
+- `models/YYYYMMDD_HHMM_best_model.pth` —— 最高 `val_f1`
+- `models/YYYYMMDD_HHMM_best_auc_model.pth` —— 最高 `val_auc`
+- `models/YYYYMMDD_HHMM_last_model.pth` —— 最后一轮检查点
 
 训练历史保存到 `outputs/history.json`。
 
@@ -371,7 +392,7 @@ uv run main.py evaluate
 ```
 
 评估流水线：
-1. 加载 `best_model.pth`
+1. 加载最新的 `*_best_model.pth` 检查点
 2. 在**验证集**上评估以找到最佳分类阈值（网格搜索最大化 F1）
 3. 使用优化后的阈值在**测试集**上评估
 4. 生成图表并保存指标报告
@@ -414,7 +435,11 @@ image-detector/
 ├── .gitignore
 │
 ├── src/                        # Rust 源码
-│   ├── lib.rs                  # PyO3 扩展 + 并行预处理
+│   ├── lib.rs                  # PyO3 扩展入口
+│   ├── processor.rs            # 并行图像处理流水线
+│   ├── dataset.rs              # 数据集目录扫描
+│   ├── image.rs                # 图像加载 + Lanczos3 缩放
+│   ├── cache.rs                # NumPy 缓存写入
 │   └── bin/
 │       └── preprocess.rs       # 独立 Rust CLI 预处理器
 │
@@ -422,11 +447,11 @@ image-detector/
 │   ├── main.py                 # CLI 参数解析 + 命令分发
 │   ├── config.py               # 全局常量 + 路径覆盖
 │   ├── system.py               # 跨平台路径 + 数据集注册表
-│   ├── model.py                # ResNet-50 构建器 + 种子设置
+│   ├── model.py                # 模型构建器（默认 DenseNet121）+ 种子设置
 │   ├── dataset.py              # CachedDataset + DataLoader 工厂
-│   ├── train.py                # 带 AMP / 早停的训练循环
+│   ├── train.py                # 带 AMP / EMA / 早停的训练循环
 │   ├── evaluate.py             # 评估 + 图表生成
-│   ├── metrics.py              # 准确率、精确率、召回率、F1、AUC
+│   ├── metrics.py              # 准确率、精确率、召回率、F1、AUC、损失函数
 │   ├── inference.py            # 单张 / 批量图像预测
 │   ├── image_process.py        # 推理用的 PIL + torchvision 变换
 │   ├── threshold_tuner.py      # 最佳阈值搜索（网格）
@@ -449,7 +474,9 @@ image-detector/
 │
 ├── cache/                      # Rust 生成的 .npy 缓存（gitignored）
 ├── models/                     # 保存的检查点（gitignored）
-└── outputs/                    # 评估图表 + 日志（gitignored）
+├── outputs/                    # 评估图表 + 日志（gitignored）
+├── datasets.json               # 数据集注册表（由 CLI/GUI 创建）
+└── 报告/                        # 实验报告目录（gitignored）
 ```
 
 ---
@@ -471,7 +498,7 @@ uv run pytest -v
 覆盖范围包括：
 - ✅ 配置常量和路径覆盖
 - ✅ CachedDataset（len、getitem、变换、完整流水线）
-- ✅ ResNet-50 模型架构和前向传播
+- ✅ DenseNet121 / ResNet-50 / EfficientNet / ConvNeXt 模型架构和前向传播
 - ✅ 指标计算（完美预测、单类边界情况）
 - ✅ 图像预处理（缩放、归一化、不同输入尺寸）
 - ✅ 系统工具（平台检测、路径解析、环境变量覆盖）
@@ -514,15 +541,11 @@ uv run main.py train
 
 ### 扩展模型
 
-编辑 `src-py/model.py` 以更换架构：
+编辑 `src-py/config.py` 以更换架构：
 
 ```python
-# 示例：切换到 ResNet-101
-def build_model(pretrained=True):
-    weights = models.ResNet101_Weights.IMAGENET1K_V2 if pretrained else None
-    model = models.resnet101(weights=weights)
-    model.fc = nn.Linear(model.fc.in_features, 1)
-    return model
+# 通过修改 src-py/config.py 中的 MODEL_ARCH 切换架构
+MODEL_ARCH = "resnet50"  # "densenet121" | "resnet50" | "efficientnet_b0" | "efficientnet_b4" | "convnext_tiny"
 ```
 
 ---
