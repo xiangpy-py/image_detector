@@ -78,16 +78,36 @@ from inference import load_trained_model, predict
 # ───────────────────────────────────────────────────────────
 
 
+def _is_kde_desktop() -> bool:
+    """检测当前桌面环境是否为 KDE/Plasma。"""
+    desktop_vars = [
+        os.getenv("XDG_CURRENT_DESKTOP", ""),
+        os.getenv("XDG_SESSION_DESKTOP", ""),
+        os.getenv("DESKTOP_SESSION", ""),
+    ]
+    return any("KDE" in v.upper() or "PLASMA" in v.upper() for v in desktop_vars)
+
+
 def _file_dialog_options() -> QFileDialog.Option:
     """返回文件对话框选项。
 
-    Linux / macOS 强制使用 Qt 内置对话框，避免与全局 QSS 发生 GTK/QSS 样式冲突
-    （GTK 原生对话框在 Qt 样式表干预下会出现白屏/文字不可见等问题）。
     Windows 保留原生对话框以获得更好的系统一致性体验。
+
+    KDE/Plasma 桌面（如 Fedora KDE）保留原生对话框，使 Qt 通过
+    xdg-desktop-portal-kde 调用 KDE 风格的文件选择器。
+
+    其他 Linux/macOS 环境（例如无桌面的 autodl 容器）强制使用 Qt 内置对话框，
+    避免 GTK 原生对话框在全局 QSS 样式干预下出现白屏、文字不可见等问题。
+
+    可通过环境变量 IMAGE_DETECTOR_FORCE_QT_DIALOG=1 强制使用 Qt 内置对话框。
     """
     if sys.platform == "win32":
         return QFileDialog.Option(0)
-    # Linux / macOS：一律非原生，确保颜色、字体完全受控于 QSS
+    if os.getenv("IMAGE_DETECTOR_FORCE_QT_DIALOG") == "1":
+        return QFileDialog.Option.DontUseNativeDialog
+    if _is_kde_desktop():
+        return QFileDialog.Option(0)
+    # 默认：非 KDE 的 Linux/macOS 使用 Qt 内置对话框，避免 GTK 样式冲突
     return QFileDialog.Option.DontUseNativeDialog
 
 

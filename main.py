@@ -2,15 +2,26 @@
 
 import sys
 from pathlib import Path
+import os
 
-# 将 src-py 加入模块搜索路径
-_PROJECT_ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(_PROJECT_ROOT / "src-py"))
+# PyInstaller 打包时会设置 _MEIPASS，指向临时解压目录
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    # 打包模式：从临时目录加载模块
+    _APP_DIR = Path(sys._MEIPASS)
+    _PROJECT_ROOT = Path(sys.executable).parent
+    _src_dir_name = "src_py"
+else:
+    # 开发模式：从源码目录加载
+    _PROJECT_ROOT = Path(__file__).resolve().parent
+    _APP_DIR = _PROJECT_ROOT
+    _src_dir_name = "src-py"
+
+sys.path.insert(0, str(_APP_DIR / _src_dir_name))
 
 # 使用 importlib 显式导入 src-py/main.py，避免名称混淆与递归导入风险
 import importlib.util
 
-_src_main_path = _PROJECT_ROOT / "src-py" / "main.py"
+_src_main_path = _APP_DIR / _src_dir_name / "main.py"
 _spec = importlib.util.spec_from_file_location("_src_main", _src_main_path)
 _src_main = importlib.util.module_from_spec(_spec)
 sys.modules["_src_main"] = _src_main
